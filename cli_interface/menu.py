@@ -9,8 +9,8 @@ class MenuItem:
     shortcut: str = ""
     description: str = ""
     children: list[MenuItem] = field(default_factory=list)
-    action: Callable[[], Any] | None = None
-    editable: bool = False
+    action: Callable[..., Any] | None = None
+    prompt: str | None = None
     current_value: Any = None
 
     @property
