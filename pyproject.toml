@@ -1,0 +1,16 @@
+[project]
+name = "cli-interface"
+version = "0.1.0"
+description = "TUI frontend for project settings navigation"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "textual>=0.80.0",
+]
+
+[project.scripts]
+cli-interface = "cli_interface.app:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
