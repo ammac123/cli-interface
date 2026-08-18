@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Callable
 from .menu import MenuItem
 
 if TYPE_CHECKING:
-    from .app import DisplayPanel
+    from .app import CLIApp, DisplayPanel
 
 log = logging.getLogger(__name__)
 
@@ -68,10 +68,16 @@ _SAMPLE_OBJECT = {
 # Menu builder
 # ---------------------------------------------------------------------------
 
-def build_example_menu(get_panel: Callable[[], "DisplayPanel"]) -> MenuItem:
+def build_example_menu(
+    get_panel: Callable[[], "DisplayPanel"],
+    get_app: Callable[[], "CLIApp"] | None = None,
+) -> MenuItem:
     """
-    Build the demo menu. ``get_panel`` is a lazy callable that returns the
-    DisplayPanel once the app is mounted — safe to call from any action.
+    Build the demo menu.
+
+    ``get_panel`` is a lazy callable that returns the DisplayPanel once the
+    app is mounted. ``get_app`` is an optional lazy callable for features
+    that need direct app access (e.g. the spinner).
     """
 
     # -- Demo: JSON ---------------------------------------------------------
@@ -142,6 +148,22 @@ def build_example_menu(get_panel: Callable[[], "DisplayPanel"]) -> MenuItem:
         p.log("User admin@corp.com changed rate_limit config", "INFO")
         p.log("Replica db-replica lag: 0.3s", "DEBUG")
 
+    # -- Demo: spinner ------------------------------------------------------
+    def start_spinner_demo() -> None:
+        if get_app is None:
+            return
+        app = get_app()
+        p   = get_panel()
+        p.clear()
+        p.log("Background job started — watch the dashboard header for the spinner.", "INFO")
+        app.start_spinner()  # cycles through loading phrases
+
+        def _finish() -> None:
+            app.stop_spinner()
+            p.log("Background job finished.", "INFO")
+
+        app.set_timer(6.0, _finish)
+
     # -- Demo: prompted action ----------------------------------------------
     def set_port(value: str) -> str:
         try:
@@ -168,21 +190,27 @@ def build_example_menu(get_panel: Callable[[], "DisplayPanel"]) -> MenuItem:
         log.warning("All settings reset to defaults")
 
     # -- Menu tree ----------------------------------------------------------
+    view_output_children = [
+        MenuItem("JSON Config",    shortcut="j", action=show_json),
+        MenuItem("Table",          shortcut="t", action=show_table),
+        MenuItem("CSV",            shortcut="c", action=show_csv),
+        MenuItem("Log Lines",      shortcut="l", action=show_logs),
+        MenuItem("Array",          shortcut="a", action=show_array),
+        MenuItem("Pretty Object",  shortcut="p", action=show_pretty),
+        MenuItem("Mixed View",     shortcut="m", action=show_mixed),
+    ]
+    if get_app is not None:
+        view_output_children.append(
+            MenuItem("Spinner Demo", shortcut="s", action=start_spinner_demo)
+        )
+
     return MenuItem(
         label="Home",
         children=[
             MenuItem(
                 label="View Output",
                 shortcut="v",
-                children=[
-                    MenuItem("JSON Config",    shortcut="j", action=show_json),
-                    MenuItem("Table",          shortcut="t", action=show_table),
-                    MenuItem("CSV",            shortcut="c", action=show_csv),
-                    MenuItem("Log Lines",      shortcut="l", action=show_logs),
-                    MenuItem("Array",          shortcut="a", action=show_array),
-                    MenuItem("Pretty Object",  shortcut="p", action=show_pretty),
-                    MenuItem("Mixed View",     shortcut="m", action=show_mixed),
-                ],
+                children=view_output_children,
             ),
             MenuItem(
                 label="Settings",
