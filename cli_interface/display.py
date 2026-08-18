@@ -42,12 +42,40 @@ class DisplayPanel:
     def __init__(self, widget: RichLog) -> None:
         self._w = widget
         self._log_buffer: list[tuple[str, str]] = []
-        self._log_only = True
+        self._log_only        = True
+        self._scrolled_to_top = False
 
     def clear(self) -> None:
         self._w.clear()
-        self._log_buffer = []
-        self._log_only = True
+        self._log_buffer      = []
+        self._log_only        = True
+        self._scrolled_to_top = False
+        self._w.auto_scroll   = True
+
+    # ------------------------------------------------------------------
+    # Content-mode helpers
+
+    def _enter_content_mode(self) -> None:
+        """Switch to content mode: disable auto-scroll before writing."""
+        self._log_only      = False
+        self._w.auto_scroll = False
+
+    def _snap_to_top(self) -> None:
+        """Scroll to the top of the panel after writing content."""
+        self._scrolled_to_top = True
+        self._w.scroll_home(animate=False)
+
+    def prepare_for_action(self) -> None:
+        """Reset per-action scroll tracking before running a new action."""
+        self._scrolled_to_top = False
+
+    def ensure_latest_visible(self) -> None:
+        """After an action completes, scroll to the bottom unless the action
+        already positioned the view at the top of new content."""
+        if not self._scrolled_to_top:
+            self._w.auto_scroll = True
+            self._w.scroll_end(animate=False)
+        self._scrolled_to_top = False
 
     # ------------------------------------------------------------------
     # Log mode — rolling buffer with fade effect on oldest entries
@@ -107,11 +135,12 @@ class DisplayPanel:
 
     def json(self, data: Any, title: str = "") -> None:
         """Pretty-print a dict, list, or JSON string with syntax highlighting."""
-        self._log_only = False
+        self._enter_content_mode()
         raw = data if isinstance(data, str) else _json.dumps(data, indent=2, default=str)
         if title:
             self._w.write(Rule(title, style=_ORANGE))
         self._w.write(Syntax(raw, "json", theme="monokai", word_wrap=True))
+        self._snap_to_top()
 
     def table(
         self,
@@ -125,7 +154,7 @@ class DisplayPanel:
         ``rows`` can be a list of dicts (keys become columns) or a list of
         lists/tuples (pass ``headers`` to name the columns).
         """
-        self._log_only = False
+        self._enter_content_mode()
         tbl = Table(
             title=title or None,
             border_style=_DIM_FG,
@@ -134,6 +163,7 @@ class DisplayPanel:
         )
         if not rows:
             self._w.write(tbl)
+            self._snap_to_top()
             return
         if isinstance(rows[0], dict):
             cols = headers or list(rows[0].keys())
@@ -149,6 +179,7 @@ class DisplayPanel:
             for row in rows:
                 tbl.add_row(*[str(v) for v in row])
         self._w.write(tbl)
+        self._snap_to_top()
 
     def csv(self, csv_string: str, title: str = "") -> None:
         """Parse and render a CSV string as a table."""
@@ -162,17 +193,19 @@ class DisplayPanel:
 
     def array(self, items: list, title: str = "") -> None:
         """Pretty-print a list."""
-        self._log_only = False
+        self._enter_content_mode()
         if title:
             self._w.write(Rule(title, style=_ORANGE))
         self._w.write(Pretty(items))
+        self._snap_to_top()
 
     def pretty(self, obj: Any, title: str = "") -> None:
         """Pretty-print any Python object."""
-        self._log_only = False
+        self._enter_content_mode()
         if title:
             self._w.write(Rule(title, style=_ORANGE))
         self._w.write(Pretty(obj))
+        self._snap_to_top()
 
     def renderable(self, obj: Any) -> None:
         """Write any Rich renderable directly (Table, Syntax, Panel, etc.)."""

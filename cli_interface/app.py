@@ -192,6 +192,24 @@ class CLIApp(App):
     # ------------------------------------------------------------------
     # Internal helpers
 
+    def _show_help(self) -> None:
+        self.panel.table(
+            [
+                {"Key / Command": "↑ / ↓",          "Action": "Navigate menu items"},
+                {"Key / Command": "Enter",           "Action": "Select item or enter submenu"},
+                {"Key / Command": "Esc",             "Action": "Go back one level"},
+                {"Key / Command": "b / back",        "Action": "Go back (typed command)"},
+                {"Key / Command": "q / quit / exit", "Action": "Quit the application"},
+                {"Key / Command": "PgUp / PgDn",     "Action": "Scroll output up / down"},
+                {"Key / Command": "Home / End",      "Action": "Jump to top / bottom of output"},
+                {"Key / Command": "clear",           "Action": "Clear the display panel"},
+                {"Key / Command": "help  /  ?",      "Action": "Show this help"},
+                {"Key / Command": "<letter>",        "Action": "Activate item by shortcut key (shown in yellow)"},
+                {"Key / Command": "1 … 9",           "Action": "Activate item by position"},
+            ],
+            title="Help",
+        )
+
     def _tick_spinner(self) -> None:
         self.query_one("#dashboard", Dashboard).spinner_frame += 1
 
@@ -243,6 +261,7 @@ class CLIApp(App):
         if item.action is None:
             return
         self._refresh_view("applying")
+        self.panel.prepare_for_action()
         try:
             result = item.action(value) if value is not None else item.action()
             label  = f"{item.label}({value!r})" if value is not None else item.label
@@ -252,6 +271,7 @@ class CLIApp(App):
             )
         except Exception as exc:
             self.panel.log(f"Error in {item.label}: {exc}", "ERROR")
+        self.panel.ensure_latest_visible()
         self._refresh_view("idle")
 
     def _activate(self, item: MenuItem) -> None:
@@ -321,6 +341,13 @@ class CLIApp(App):
             return
         if cmd in ("b", "back"):
             self.action_go_back()
+            return
+
+        if cmd == "clear":
+            self.panel.clear()
+            return
+        if cmd in ("help", "?"):
+            self._show_help()
             return
 
         item = self._state.select_by_shortcut(cmd)
