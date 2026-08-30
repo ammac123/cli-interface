@@ -380,7 +380,12 @@ class CLIApp(App):
 # Public helpers
 # ---------------------------------------------------------------------------
 
-def attach_logging(app: CLIApp, logger: logging.Logger | None = None) -> None:
+def attach_logging(
+    app: CLIApp,
+    logger: logging.Logger | None = None,
+    *,
+    exclusive: bool = False,
+) -> None:
     """
     Wire a Python logger into the display panel.
 
@@ -388,10 +393,14 @@ def attach_logging(app: CLIApp, logger: logging.Logger | None = None) -> None:
     Pass a specific logger to capture only that namespace::
 
         attach_logging(app, logging.getLogger("my_project"))
+
+    Set ``exclusive=True`` to strip all pre-existing handlers first so that
+    logs go *only* to the TUI (suppresses the default stderr StreamHandler).
     """
-    target  = logger or logging.getLogger()
-    handler = TUILogHandler(app)
-    target.addHandler(handler)
+    target = logger or logging.getLogger()
+    if exclusive:
+        target.handlers.clear()
+    target.addHandler(TUILogHandler(app))
 
 
 def run(menu: MenuItem | None = None) -> None:

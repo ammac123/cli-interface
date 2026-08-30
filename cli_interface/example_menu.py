@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING, Callable
 
 from .menu import MenuItem
@@ -176,6 +177,36 @@ def build_example_menu(
             log.warning("Invalid port %r: %s", value, exc)
             return f"invalid: {value!r}"
 
+    # -- Demo: worker with exclusive log capture ----------------------------
+    def run_worker() -> None:
+        if get_app is None:
+            return
+        from . import example_worker
+        from .app import attach_logging
+        from .log_handler import TUILogHandler
+
+        app = get_app()
+        p   = get_panel()
+        p.clear()
+        p.rule("Worker Output")
+        p.log("Launching background worker — logs captured exclusively in this panel", "INFO")
+
+        # Strip any existing handlers (e.g. the default stderr StreamHandler)
+        # and redirect everything to the TUI.
+        root = logging.getLogger()
+        root.setLevel(logging.DEBUG)
+        attach_logging(app, exclusive=True)
+
+        app.start_spinner(label="worker running…")
+
+        def _run() -> None:
+            try:
+                example_worker.run()
+            finally:
+                app.call_from_thread(app.stop_spinner)
+
+        threading.Thread(target=_run, daemon=True).start()
+
     # -- Settings (uses logging) --------------------------------------------
     def set_volume(level: int):
         def _action():
@@ -211,6 +242,12 @@ def build_example_menu(
                 label="View Output",
                 shortcut="v",
                 children=view_output_children,
+            ),
+            MenuItem(
+                label="Worker Demo",
+                shortcut="w",
+                action=run_worker,
+                description="Run a background worker whose logs are captured exclusively in the TUI",
             ),
             MenuItem(
                 label="Settings",

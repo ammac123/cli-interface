@@ -88,6 +88,7 @@ class PromptScreen(ModalScreen[str | None]):
         self.query_one("#prompt-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
         self.dismiss(event.value)
 
     def action_cancel(self) -> None:
