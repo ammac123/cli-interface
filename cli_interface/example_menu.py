@@ -4,11 +4,17 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Callable
 
+from textual.css.query import NoMatches
+
 from .menu import MenuItem
 
 if TYPE_CHECKING:
     from .app import CLIApp, DisplayPanel
 
+# Logger for the Settings demo actions (set_port, set_volume, ...). The demo attaches no
+# handler for it: INFO records are dropped and WARNING records go to stderr, which Textual
+# redirects. The panel therefore shows only the "Executed:" line, except while the Worker
+# Demo's temporary root capture is active.
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -105,6 +111,7 @@ def build_example_menu(
         p.clear()
         p.rule("Recent Events")
         p.log("Application started on port 8080", "INFO")
+        p.log("Loaded config[server][port] = 8080", "DEBUG")  # brackets are literal by default
         p.log("Database connection pool initialised (10 connections)", "DEBUG")
         p.log("User alice@example.com authenticated", "INFO")
         p.log("Cache miss rate above threshold: 42%", "WARNING")
@@ -178,24 +185,27 @@ def build_example_menu(
             return f"invalid: {value!r}"
 
     # -- Demo: worker with exclusive log capture ----------------------------
+    worker_running = threading.Event()
+
     def run_worker() -> None:
         if get_app is None:
             return
         from . import example_worker
         from .app import attach_logging
-        from .log_handler import TUILogHandler
 
         app = get_app()
         p   = get_panel()
+        if worker_running.is_set():
+            p.log("Worker already running", "WARNING")
+            return
+        worker_running.set()
         p.clear()
         p.rule("Worker Output")
         p.log("Launching background worker — logs captured exclusively in this panel", "INFO")
 
-        # Strip any existing handlers (e.g. the default stderr StreamHandler)
-        # and redirect everything to the TUI.
-        root = logging.getLogger()
-        root.setLevel(logging.DEBUG)
-        attach_logging(app, exclusive=True)
+        # Exclusive capture lasts only for this run; detach() restores the
+        # root logger's original handlers and level.
+        capture = attach_logging(app, exclusive=True, level=logging.DEBUG)
 
         app.start_spinner(label="worker running…")
 
@@ -203,11 +213,23 @@ def build_example_menu(
             try:
                 example_worker.run()
             finally:
-                app.call_from_thread(app.stop_spinner)
+                try:
+                    capture.detach()
+                finally:
+                    try:
+                        app.call_from_thread(app.stop_spinner)
+                    except (RuntimeError, NoMatches):  # app already exited
+                        pass
+                    finally:
+                        worker_running.clear()
 
         threading.Thread(target=_run, daemon=True).start()
 
-    # -- Settings (uses logging) --------------------------------------------
+    # -- Demo: secret prompt (the app never echoes the typed value; this logs only its length)
+    def set_token(value: str) -> None:
+        get_panel().log(f"Token accepted ({len(value)} chars)")
+
+    # -- Settings: these log via ``log`` (see the note at the top), so only their "Executed:" line shows
     def set_volume(level: int):
         def _action():
             log.info("Volume set to %d%%", level)
@@ -268,6 +290,13 @@ def build_example_menu(
                         shortcut="p",
                         prompt="Enter port number (1–65535):",
                         action=set_port,
+                    ),
+                    MenuItem(
+                        "Set Token",
+                        shortcut="k",
+                        prompt="Enter API token:",
+                        secret=True,
+                        action=set_token,
                     ),
                     MenuItem("Reset All", shortcut="x", action=reset_all),
                 ],

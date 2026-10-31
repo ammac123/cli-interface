@@ -14,3 +14,22 @@ cli-interface = "cli_interface.app:run"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+faulthandler_timeout = 60
+markers = ["allow_tui_handler_leak: this test intentionally leaves a TUILogHandler on the root logger"]
+filterwarnings = [
+    # the package's own UserWarnings (shortcut conflicts, ignored attach arguments) fail a test unless it expects them
+    'error:.*(reserved command and will never reach|only the first is reachable|were ignored because):UserWarning',
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
