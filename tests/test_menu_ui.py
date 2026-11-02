@@ -183,7 +183,7 @@ async def test_callable_labels_appear_in_the_breadcrumb_and_follow_refresh_menu(
         mode["label"] = "Beta"
         app.refresh_menu()
         await pilot.pause()
-        assert dash.render().plain.startswith(" Home › Beta\n") and dash.location == "Home|Beta"
+        assert dash.render().plain.startswith(" Home › Beta\n") and dash.crumbs == ("Home", "Beta")
 
 
 async def test_the_executed_line_uses_the_label_as_it_was_before_the_action_ran():
@@ -314,9 +314,9 @@ async def test_a_consumer_item_whose_description_looks_like_a_sentinel_runs_its_
         await pilot.pause()
         assert calls.names == ["consumer"] * 3 and app.is_running and app.return_code is None
         await type_command(pilot, "s")
-        assert dash.location == "Home|Sub" and app.is_running
+        assert dash.crumbs == ("Home", "Sub") and app.is_running
         await type_command(pilot, "i")
-        assert calls.names[-1] == "inner" and dash.location == "Home|Sub"
+        assert calls.names[-1] == "inner" and dash.crumbs == ("Home", "Sub")
 
 
 @pytest.mark.parametrize("description", ["__exit__", "__back__"])
@@ -349,7 +349,7 @@ async def test_the_real_back_cell_goes_up_when_selected_and_confirmed_with_enter
         assert isinstance(nav_of(app).items[-1], _NavCell) and nav_of(app).items[-1].kind == "back"
         await pilot.press("down", "enter")
         await pilot.pause()
-        assert dash.location == "Home" and calls.names == [] and app.is_running
+        assert dash.crumbs == ("Home",) and calls.names == [] and app.is_running
         assert nav_of(app).items[-1].kind == "exit"
 
 
@@ -358,7 +358,7 @@ async def test_the_real_back_cell_goes_up_when_selected_and_confirmed_with_enter
 async def reserved_setup(pilot) -> None:
     pilot.app.panel.log("marker-line")
     await type_command(pilot, "s")  # into the submenu, so "back" has somewhere to go
-    assert pilot.app.query_one("#dashboard", Dashboard).location == "Home|Sub"
+    assert pilot.app.query_one("#dashboard", Dashboard).crumbs == ("Home", "Sub")
 
 
 @pytest.mark.parametrize("case", ["as-is", "upper"])
@@ -374,9 +374,11 @@ async def test_every_reserved_command_triggers_its_mapped_action(command, action
         if action == "quit":
             await wait_for(lambda: app.return_code is not None, what="app to exit")
         elif action == "back":
-            assert dash.location == "Home" and app.is_running
+            assert dash.crumbs == ("Home",) and app.is_running
         elif action == "clear":
-            assert panel_lines(app) == [] and dash.location == "Home|Sub"
+            assert panel_lines(app) == [] and dash.crumbs == ("Home", "Sub")
+        elif action == "stop":
+            assert "Nothing is running" in await read_panel(pilot)
         else:
             assert "Navigate menu items" in await read_panel(pilot)
         if action != "quit":
@@ -393,20 +395,7 @@ async def test_a_label_containing_a_pipe_is_one_crumb():
         await type_command(pilot, "t")
         assert dash.render().plain.startswith(" Home › a|b › c|d|e\n")
         assert dash.crumbs == ("Home", "a|b", "c|d|e")
-        assert dash.location == "Home|a|b|c|d|e"
         assert "Home › a|b › c|d|e" in widget_text(dash)
-
-
-async def test_the_dashboard_falls_back_to_splitting_location_while_crumbs_is_unset():
-    app = CLIApp(menu(leaf("A", "a")))
-    async with app.run_test(size=SIZE) as pilot:
-        await pilot.pause()
-        dash = app.query_one("#dashboard", Dashboard)
-        dash.crumbs = None
-        dash.location = "x|y|z"
-        assert dash.render().plain.startswith(" x › y › z\n")
-        dash.crumbs = ("x|y", "z")
-        assert dash.render().plain.startswith(" x|y › z\n")
 
 
 # --------------------------------------------------------------------------- CF-13: the prompt dialog hint

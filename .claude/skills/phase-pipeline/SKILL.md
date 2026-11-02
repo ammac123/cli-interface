@@ -17,6 +17,20 @@ description: Run one phase of the cli_interface improvement plan through the use
 
 Everything below is how the orchestrator (the main session) carries that out.
 
+## Lean mode (default from Phase 3; agreed with the user 2026-11-03)
+
+Phase 2 cost about 3.4M reported subagent tokens and about 14 h, roughly half of it waiting on three session-limit resets. The user asked for a cheaper process. These rules override the steps below where they conflict; the six steps and their order stay.
+
+- **Scope per phase:** at most about 4 work packages and a plan of at most 15 KB. If the phase table is bigger, split it and ask the user.
+- **Executors write their own tests** into `tests/` (each owns one test file). No throwaway smoke scripts, no executor mutation runs, one environment (the locked one) during development.
+- **Tester (step 4) is cross-cutting only:** repair old tests, end-to-end and subprocess tests, one sampled mutation pass (about 15-20 mutations).
+- **One review round.** Fix only BLOCKER and MAJOR. MINOR and NIT go on the carry-forward list (they are fixed in a later phase unless the user says otherwise).
+- **Lowest-direct (3.11) environment once, at the end**, run by the orchestrator. CI covers the version matrix after a push.
+- **Integrator (step 5) is an orchestrator checklist, not an agent:** full suite, ruff, mypy, `uv build` plus `scripts/check_dist.py`, `import cli_interface`, demo under Pilot. Spawn an Integrator only if the checklist finds gaps.
+- **Models:** sonnet for design-heavy packages and the reviewer; haiku for mechanical work (test repairs, docs, small edits). No opus unless a role shows a capability problem.
+- **Small fixes get a fresh agent** with a short brief that points at the review file, rather than resuming a large-context agent.
+- Failed tests still go to the Reviewer to classify (the user's process); keep that brief short.
+
 ## Inputs
 
 - [phases.md](phases.md): the review findings (W*, F*) and the phase tables. This defines each phase's scope.

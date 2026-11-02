@@ -49,18 +49,24 @@ PACKAGE_MODULES = (
     "__init__",
     "_version",
     "app",
+    "capture",
     "cli",
+    "commands",
+    "context",
     "display",
+    "events",
+    "jobs",
     "log_handler",
     "menu",
+    "outcome",
     "phrases",
     "theme",
     "widgets",
     "warning_types",
 )
-EXAMPLE_MODULES = ("__init__", "example_menu", "example_worker", "main")
+EXAMPLE_MODULES = ("__init__", "app_demo", "example_menu", "example_worker", "main")
 
-REQUIRES_PYTHON = ">=3.11"
+REQUIRES_PYTHON = ">=3.13"
 REQUIRED_DEPENDENCIES = {
     "rich": frozenset({">=13.3.3"}),
     "textual": frozenset({">=0.80", "<9"}),

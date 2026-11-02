@@ -4,12 +4,12 @@ position), and the shortcut rules (``RESERVED_COMMANDS``, ``find_shortcut_confli
 
 ``MenuItem``, ``RESERVED_COMMANDS`` and ``find_shortcut_conflicts`` are public and
 re-exported by ``cli_interface``. The rest (``MenuState``, ``item_label``,
-``item_value``, ``reserved_action``, ``normalize_shortcut``, ``make_nav_cell``) is
-internal to the package.
+``item_value``, ``reserved_action``, ``normalize_shortcut``, ``make_nav_cell``,
+``make_command_item``) is internal to the package.
 """
 from __future__ import annotations
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from reprlib import recursive_repr
 from types import MappingProxyType
@@ -60,7 +60,8 @@ class MenuItem:
     breadcrumb, an ``Executed:`` / ``Error in`` line, a prompt title or a shortcut-conflict
     message is built. Keep it cheap and free of side effects. The result goes through
     ``str()``; if the call (or the ``str()``) raises an ``Exception``, ``<error>`` is shown
-    instead and the failure is logged at DEBUG on ``cli_interface.menu``. The label in an
+    instead and the failure is logged at DEBUG on ``cli_interface.menu``, once per item and
+    field until the callable next succeeds. The label in an
     ``Executed:`` line is read before the action runs.
     """
 
@@ -89,7 +90,7 @@ class MenuItem:
         return not self.children
 
 
-ReservedAction = Literal["quit", "back", "clear", "help"]
+ReservedAction = Literal["quit", "back", "clear", "help", "stop"]
 
 # Typed commands handled by the app itself. They match case-insensitively (surrounding
 # whitespace is ignored) and always win over a consumer shortcut; the item stays reachable
@@ -101,6 +102,7 @@ RESERVED_ACTIONS: Mapping[str, ReservedAction] = MappingProxyType({
     "b": "back", "back": "back",
     "clear": "clear",
     "help": "help", "?": "help",
+    "stop": "stop",
 })
 RESERVED_COMMANDS: frozenset[str] = frozenset(RESERVED_ACTIONS)
 
@@ -110,8 +112,8 @@ _BACK_SHORTCUT = "b"
 
 def reserved_action(text: str) -> ReservedAction | None:
     """
-    The action a typed reserved command triggers (``"quit"``, ``"back"``, ``"clear"`` or
-    ``"help"``), or ``None`` if ``text`` is not one. Case-insensitive; surrounding
+    The action a typed reserved command triggers (``"quit"``, ``"back"``, ``"clear"``,
+    ``"help"`` or ``"stop"``), or ``None`` if ``text`` is not one. Case-insensitive; surrounding
     whitespace is ignored.
     """
     return RESERVED_ACTIONS.get(text.strip().lower())
@@ -126,25 +128,43 @@ def normalize_shortcut(shortcut: str) -> str:
     return shortcut.strip().lower()
 
 
+def _failed(item: MenuItem, key: str) -> bool:
+    """Mark ``key`` as raising; True if it already was since it last succeeded."""
+    state = item.__dict__
+    if state.get(key):
+        return True
+    state[key] = True
+    return False
+
+
+def _recovered(item: MenuItem, key: str) -> None:
+    item.__dict__.pop(key, None)
+
+
 def item_label(item: MenuItem) -> str:
     """
     The label as text. A callable label is called with no arguments and the result goes
     through ``str()``. An ``Exception`` from either is logged at DEBUG on
-    ``cli_interface.menu`` and yields ``"<error>"``; a ``BaseException`` propagates.
+    ``cli_interface.menu`` and yields ``"<error>"``; a ``BaseException`` propagates. The
+    record is logged once per item until the label next evaluates without raising.
     """
     try:
         label = item.label
-        return str(label() if callable(label) else label)
+        text = str(label() if callable(label) else label)
     except Exception:
-        _log.debug("menu item label raised", exc_info=True)
+        if not _failed(item, "_label_raised"):
+            _log.debug("menu item label raised", exc_info=True)
         return "<error>"
+    _recovered(item, "_label_raised")
+    return text
 
 
 def item_value(item: MenuItem) -> Any:
     """
     ``current_value``, called with no arguments if it is callable. ``None`` means no value.
     An ``Exception`` from the callable is logged at DEBUG on ``cli_interface.menu`` and
-    yields ``"<error>"``; a ``BaseException`` propagates.
+    yields ``"<error>"``; a ``BaseException`` propagates. The record is logged once per
+    item until the callable next succeeds.
 
     This does not mask secrets and does not look at ``item.secret``: the caller must
     check it first and neither call nor show the value of a secret item (the nav bar's
@@ -154,10 +174,13 @@ def item_value(item: MenuItem) -> Any:
     if not callable(value):
         return value
     try:
-        return value()
+        result = value()
     except Exception:
-        _log.debug("menu item current_value raised", exc_info=True)
+        if not _failed(item, "_value_raised"):
+            _log.debug("menu item current_value raised", exc_info=True)
         return "<error>"
+    _recovered(item, "_value_raised")
+    return result
 
 
 @dataclass(repr=False)
@@ -178,6 +201,36 @@ def make_nav_cell(kind: Literal["exit", "back"]) -> _NavCell:
     if kind == "back":
         return _NavCell("Back", shortcut=_BACK_SHORTCUT, kind="back")
     raise ValueError(f"unknown nav cell kind: {kind!r}")
+
+
+@dataclass(repr=False)
+class _CommandItem(MenuItem):
+    """A leaf registered through ``App.command``. Detect with ``isinstance``."""
+
+    cancellable: bool = False
+    command_path: tuple[str, ...] = ()
+
+
+def make_command_item(
+    path: str | Sequence[str],
+    fn: Callable[..., Any],
+    *,
+    key: str = "",
+    cancellable: bool = False,
+    description: str = "",
+) -> _CommandItem:
+    """
+    Build the leaf for a command at ``path``: a ``"/"``-separated string or a sequence of
+    segments. The label is the last segment, ``key`` is the shortcut and ``fn`` the action.
+    ``ValueError`` for an empty path or an empty segment.
+    """
+    segments = tuple(path.split("/")) if isinstance(path, str) else tuple(path)
+    if not segments or not all(isinstance(s, str) and s.strip() for s in segments):
+        raise ValueError(f"invalid command path: {path!r}")
+    return _CommandItem(
+        segments[-1], shortcut=key, description=description, action=fn,
+        cancellable=cancellable, command_path=segments,
+    )
 
 
 def find_shortcut_conflicts(root: MenuItem) -> list[str]:
@@ -260,7 +313,8 @@ class MenuState:
         down from the root, keep a level only while it is still one of its parent's
         children (by identity) and still has children; drop it and everything below
         otherwise. The root is always kept. Each remaining selection is clamped to its
-        level, not reset. Returns True if the stack shrank.
+        level; if levels were dropped, the new top level's selection is reset to 0.
+        Returns True if the stack shrank.
         """
         keep = 1
         while keep < len(self._stack):
@@ -274,6 +328,8 @@ class MenuState:
         self._stack = [
             (menu, max(0, min(index, len(menu.children) - 1))) for menu, index in self._stack
         ]
+        if shrank:
+            self._stack[-1] = (self._stack[-1][0], 0)
         return shrank
 
     @property
@@ -319,10 +375,6 @@ class MenuState:
             return False
         self._stack.pop()
         return True
-
-    def move(self, delta: int) -> None:
-        """Move the selection by ``delta``, clamped. (``CLIApp`` tracks its own highlight and does not use this.)"""
-        self.selected_index = self.selected_index + delta
 
     def select_by_shortcut(self, key: str) -> MenuItem | None:
         """The first child of the current menu whose shortcut equals ``key`` (case-insensitive, whitespace-trimmed)."""

@@ -39,7 +39,7 @@ def headless_run(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
                 await pilot.pause()
                 nav = self.query_one("#nav-bar", NavBar)
                 seen["views"].append({
-                    "location": self.query_one("#dashboard", Dashboard).location,
+                    "crumbs": self.query_one("#dashboard", Dashboard).crumbs,
                     "labels": [item_label(i) for i in nav.items],
                     "max_lines": self.query_one("#display-panel", RichLog).max_lines,
                     "panel": "\n".join(s.text for s in self.query_one("#display-panel", RichLog).lines),
@@ -112,7 +112,7 @@ def test_a_menu_item_target_is_shown_as_the_root(workdir, headless_run):
     """)
     assert run_main(f"{name}:ROOT") == 0
     assert headless_run["runs"] == 1
-    assert headless_run["views"][0]["location"] == "Root"
+    assert headless_run["views"][0]["crumbs"] == ("Root",)
     assert headless_run["views"][0]["labels"] == ["First", "Second", "Exit"]
 
 
@@ -123,7 +123,7 @@ def test_a_zero_argument_callable_is_called_without_arguments(workdir, headless_
             return MenuItem("Zero", children=[MenuItem("Leaf", shortcut="l")])
     """)
     assert run_main(f"{name}:build_menu") == 0
-    assert headless_run["views"][0]["location"] == "Zero"
+    assert headless_run["views"][0]["crumbs"] == ("Zero",)
 
 
 def test_a_callable_with_a_required_parameter_receives_the_running_app(workdir, headless_run):
@@ -137,7 +137,7 @@ def test_a_callable_with_a_required_parameter_receives_the_running_app(workdir, 
     assert run_main(f"{name}:build_menu") == 0
     (received,) = sys.modules[name].RECEIVED
     assert isinstance(received, CLIApp) and received is headless_run["apps"][0]
-    assert headless_run["views"][0]["location"] == "With app"
+    assert headless_run["views"][0]["crumbs"] == ("With app",)
 
 
 @pytest.mark.parametrize(
@@ -155,7 +155,7 @@ def test_a_callable_without_a_required_positional_parameter_is_called_without_ar
             return MenuItem("No app")
     """)
     assert run_main(f"{name}:build_menu") == 0
-    assert headless_run["views"][0]["location"] == "No app"
+    assert headless_run["views"][0]["crumbs"] == ("No app",)
     assert sys.modules[name].CAPTURED == [expected]
 
 
@@ -179,7 +179,7 @@ def test_a_dotted_attribute_path_is_followed(workdir, headless_run):
     """)
     for attr, expected in (("Holder.MENU", "Attribute"), ("Holder.make", "Static method"), ("Holder.Inner.MENU", "Nested class")):
         assert run_main(f"{name}:{attr}") == 0
-        assert headless_run["views"][-1]["location"] == expected
+        assert headless_run["views"][-1]["crumbs"] == (expected,)
 
 
 def test_a_module_inside_a_package_is_resolved(workdir, headless_run):
@@ -189,7 +189,7 @@ def test_a_module_inside_a_package_is_resolved(workdir, headless_run):
             return MenuItem("In package")
     """})
     assert run_main(f"{package}.menus:build_menu") == 0
-    assert headless_run["views"][0]["location"] == "In package"
+    assert headless_run["views"][0]["crumbs"] == ("In package",)
 
 
 def test_the_current_directory_is_searched_first_and_is_put_on_sys_path_once(workdir):
@@ -209,7 +209,7 @@ def test_the_repository_demo_resolves_from_the_repository_root(monkeypatch, head
     monkeypatch.setattr(sys, "path", list(sys.path))
     assert run_main("examples.example_menu:build_menu") == 0
     view = headless_run["views"][0]
-    assert view["location"] == "Home"
+    assert view["crumbs"] == ("Home",)
     assert view["labels"][0] == "View Output" and "Settings" in view["labels"] and view["labels"][-1] == "Exit"
 
 
@@ -467,3 +467,166 @@ def test_the_console_script_is_registered_in_the_package_metadata():
     (entry,) = [e for e in importlib.metadata.entry_points(group="console_scripts") if e.name == "cli-interface"]
     assert entry.value == "cli_interface.cli:main"
     assert entry.load() is cli.main
+
+
+# --------------------------------------------------------------------------- Phase 2 / C1-7: an App (or CLIApp) as the target
+
+APP_MODULE = """
+    from cli_interface import App, Context
+
+    app = App("Mod app")
+
+    @app.command("Run/Go", key="g")
+    def go(ctx: Context):
+        return "went"
+"""
+
+
+@pytest.fixture
+def demo_modules():
+    """examples.app_demo builds a module-level singleton, which Textual cannot run twice: import it afresh."""
+    for name in [n for n in sys.modules if n == "examples.app_demo"]:
+        del sys.modules[name]
+    yield
+    for name in [n for n in sys.modules if n == "examples.app_demo"]:
+        del sys.modules[name]
+
+
+def test_an_app_instance_is_run_as_it_is_not_wrapped_or_copied(workdir, headless_run):
+    name = write_module(workdir, APP_MODULE)
+    assert run_main(f"{name}:app") == 0
+    from cli_interface import App
+
+    (app,) = headless_run["apps"]
+    assert isinstance(app, App) and app is sys.modules[name].app
+    view = headless_run["views"][0]
+    assert view["crumbs"] == ("Mod app",) and view["labels"] == ["Run", "Exit"]
+
+
+def test_a_plain_cliapp_instance_is_a_valid_target_too(workdir, headless_run):
+    name = write_module(workdir, """
+        from cli_interface import CLIApp, MenuItem
+        APP = CLIApp(MenuItem("Classic", children=[MenuItem("A", shortcut="a")]))
+    """)
+    assert run_main(f"{name}:APP") == 0
+    assert headless_run["apps"][0] is sys.modules[name].APP
+    assert headless_run["views"][0]["crumbs"] == ("Classic",)
+
+
+def test_a_callable_returning_an_app_is_called_and_its_app_is_run(workdir, headless_run):
+    name = write_module(workdir, """
+        from cli_interface import App
+
+        def build():
+            return App("Built")
+    """)
+    assert run_main(f"{name}:build") == 0
+    assert headless_run["views"][0]["crumbs"] == ("Built",)
+    assert type(headless_run["apps"][0]).__name__ == "App"
+
+
+def test_the_unchanged_build_menu_app_rule_still_hands_the_callable_the_app_that_will_show_the_menu(workdir, headless_run):
+    name = write_module(workdir, """
+        from cli_interface import MenuItem
+
+        def build_menu(app):
+            return MenuItem("Uses app", children=[MenuItem("Log", shortcut="l", action=lambda: app.panel.log("hi"))])
+    """)
+    assert run_main(f"{name}:build_menu") == 0
+    assert type(headless_run["apps"][0]) is CLIApp
+    assert headless_run["views"][0]["crumbs"] == ("Uses app",)
+
+
+def test_a_callable_with_a_required_parameter_may_also_return_an_app(workdir, headless_run):
+    name = write_module(workdir, """
+        from cli_interface import App
+
+        def build(placeholder):
+            return App("From param")
+    """)
+    assert run_main(f"{name}:build") == 0
+    assert headless_run["views"][0]["crumbs"] == ("From param",)
+
+
+def test_max_lines_is_applied_to_an_app_target(workdir, headless_run):
+    name = write_module(workdir, APP_MODULE)
+    assert run_main("--max-lines", "77", f"{name}:app") == 0
+    assert headless_run["views"][0]["max_lines"] == 77
+
+
+def test_without_options_an_app_target_keeps_its_own_settings(workdir, headless_run):
+    name = write_module(workdir, """
+        from cli_interface import App
+        app = App("Own", max_lines=33)
+    """)
+    assert run_main(f"{name}:app") == 0
+    assert headless_run["views"][0]["max_lines"] == 33
+
+
+def test_strict_shortcuts_on_an_app_with_a_conflict_is_a_usage_error_listing_the_problems(workdir, headless_run, capsys):
+    name = write_module(workdir, """
+        import warnings
+        from cli_interface import App
+        app = App("Conflicted")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            app.add_command("Quit it", lambda: None, key="q")
+            app.add_command("X1", lambda: None, key="x")
+            app.add_command("X2", lambda: None, key="x")
+    """)
+    assert exit_code_of("--strict-shortcuts", f"{name}:app") == 2
+    err = capsys.readouterr().err
+    assert "shortcut conflicts" in err and "shortcut 'q' on 'Quit it' is a reserved command" in err
+    assert "shortcut 'x' is used by 'X1', 'X2'" in err
+    assert headless_run["runs"] == 0
+
+
+def test_strict_shortcuts_on_a_clean_app_just_runs_it(workdir, headless_run):
+    name = write_module(workdir, """
+        from cli_interface import App
+        app = App("Clean")
+        app.add_command("Fine", lambda: None, key="f")
+    """)
+    assert run_main("--strict-shortcuts", f"{name}:app") == 0
+    assert sys.modules[name].app._strict_shortcuts is True and headless_run["runs"] == 1
+
+
+def test_leaving_the_flag_out_never_loosens_an_app_built_strict(workdir, headless_run):
+    name = write_module(workdir, """
+        from cli_interface import App
+        app = App("Strict", strict_shortcuts=True)
+        app.add_command("Fine", lambda: None, key="f")
+    """)
+    assert run_main(f"{name}:app") == 0
+    assert sys.modules[name].app._strict_shortcuts is True
+
+
+def test_an_object_that_is_not_an_app_a_menu_or_a_callable_still_exits_two_naming_the_alternatives(workdir, headless_run, capsys):
+    name = write_module(workdir, "VALUE = 5\n")
+    assert exit_code_of(f"{name}:VALUE") == 2
+    err = capsys.readouterr().err
+    assert "neither a MenuItem nor a callable" in err and "app" in err
+
+
+def test_a_callable_returning_something_else_names_the_app_option_too(workdir, headless_run, capsys):
+    name = write_module(workdir, "def build():\n    return 5\n")
+    assert exit_code_of(f"{name}:build") == 2
+    assert "returned int, not a MenuItem or an app" in capsys.readouterr().err
+
+
+def test_the_shipped_app_demo_resolves_as_a_target(monkeypatch, headless_run, demo_modules):
+    monkeypatch.chdir(REPO)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    assert run_main("examples.app_demo:app") == 0
+    (app,) = headless_run["apps"]
+    assert app is sys.modules["examples.app_demo"].app
+    view = headless_run["views"][0]
+    assert view["crumbs"] == ("Demo",) and view["labels"] == ["Run", "Tools", "Exit"]
+
+
+def test_the_older_example_targets_still_build_a_plain_cliapp(monkeypatch, headless_run):
+    monkeypatch.chdir(REPO)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    for target in ("examples.main:build_menu", "examples.example_menu:build_menu"):
+        assert run_main(target) == 0
+        assert type(headless_run["apps"][-1]) is CLIApp, target

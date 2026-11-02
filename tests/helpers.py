@@ -137,8 +137,33 @@ class StubPanel:
         return [m for m, _ in self.out]
 
 
+class StubSink:
+    """Event sink for PanelInbox unit tests: records every event, and (message, level) for each ``log`` event."""
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+        self.out: list[tuple[str, str]] = []
+        self.fail: Exception | None = None
+        self.failed_attempts = 0
+
+    def emit(self, event: dict[str, Any]) -> None:
+        if self.fail is not None:
+            self.failed_attempts += 1
+            raise self.fail
+        self.events.append(event)
+        if event.get("kind") == "log":
+            self.out.append((event["msg"], event["level"]))
+
+    @property
+    def messages(self) -> list[str]:
+        return [m for m, _ in self.out]
+
+    def kinds(self) -> list[str]:
+        return [e["kind"] for e in self.events]
+
+
 class StubApp:
-    """Minimal app for PanelInbox and LogAttachment unit tests: it only needs .panel and .push_log."""
+    """Minimal app for LogAttachment unit tests: it only needs .panel and .push_log."""
 
     def __init__(self) -> None:
         self.panel = StubPanel()
@@ -202,3 +227,63 @@ class ThreadWatch:
 
     def join(self, timeout: float = 10.0) -> None:
         join_all(self.alive(), timeout)
+
+
+# --------------------------------------------------------------------------- jobs: gates and settling
+
+GATES: list[threading.Event] = []
+
+
+def make_gate() -> threading.Event:
+    """A gate for a job body to wait on (``gate.wait(15)``); the autouse guard releases it after the test."""
+    gate = threading.Event()
+    GATES.append(gate)
+    return gate
+
+
+async def wait_event(event: threading.Event, timeout: float = 10.0, what: str = "the event") -> None:
+    """Await a threading.Event without blocking the loop (and without polling)."""
+    loop = asyncio.get_running_loop()
+    if not await loop.run_in_executor(None, event.wait, timeout):
+        raise AssertionError(f"timed out after {timeout}s waiting for {what}")
+
+
+async def settle(pilot: Any, timeout: float = 10.0) -> None:
+    """Let the UI catch up and every job and queued event finish (only when the app is expected to go idle)."""
+    await pilot.pause()
+    await pilot.app.jobs.wait_idle(timeout=timeout)
+    await pilot.pause()
+
+
+async def press_and_wait(pilot: Any, *keys: str, jobs: int = 1, timeout: float = 10.0) -> None:
+    """Press keys and wait for ``jobs`` jobs to complete: the canonical pattern for thread and loop jobs."""
+    app = pilot.app
+    mark = app.jobs.mark()
+    await pilot.press(*keys)
+    await app.jobs.wait_idle(since=mark, jobs=jobs, timeout=timeout)
+    await pilot.pause()
+
+
+async def run_command(pilot: Any, text: str, *, jobs: int = 1, timeout: float = 10.0) -> None:
+    """Type ``text`` + Enter and wait for ``jobs`` jobs to complete."""
+    from textual.widgets import Input
+
+    app = pilot.app
+    mark = app.jobs.mark()
+    app.query_one("#command-input", Input).value = text
+    await pilot.press("enter")
+    await app.jobs.wait_idle(since=mark, jobs=jobs, timeout=timeout)
+    await pilot.pause()
+
+
+def crumbs(app: Any) -> tuple[str, ...]:
+    return tuple(app.screen_stack[0].query_one("#dashboard").crumbs)
+
+
+async def spin_until(predicate: Callable[[], Any], timeout: float = 10.0, what: str = "") -> None:
+    """Yield to the loop (``sleep(0)``, never a timed sleep) until ``predicate()`` holds or the deadline passes."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"timed out after {timeout}s waiting for {what or predicate}")
+        await asyncio.sleep(0)

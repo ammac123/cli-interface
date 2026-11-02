@@ -21,7 +21,7 @@ from helpers import (
 
 
 def test_reserved_commands_value():
-    assert RESERVED_COMMANDS == frozenset({"q", "quit", "exit", "b", "back", "clear", "help", "?"})
+    assert RESERVED_COMMANDS == frozenset({"q", "quit", "exit", "b", "back", "clear", "help", "?", "stop"})
 
 
 def test_conflict_messages_cover_reserved_duplicates_case_and_levels():
@@ -178,9 +178,9 @@ async def test_back_commands_go_up_one_level_in_any_case(make_app, cmd):
     async with app.run_test(size=SIZE) as pilot:
         await type_command(pilot, "s")
         dash = app.query_one("#dashboard", Dashboard)
-        assert dash.location == "Home|Sub"
+        assert dash.crumbs == ("Home", "Sub")
         await type_command(pilot, cmd)
-        assert dash.location == "Home" and app.is_running
+        assert dash.crumbs == ("Home",) and app.is_running
 
 
 @pytest.mark.parametrize("cmd", variants("clear"))
@@ -245,10 +245,10 @@ async def test_a_single_navigation_key_does_not_navigate_until_enter(make_app):
         dash = app.query_one("#dashboard", Dashboard)
         await pilot.press("v")
         await pilot.pause()
-        assert dash.location == "Home" and app.query_one("#command-input", Input).value == "v"
+        assert dash.crumbs == ("Home",) and app.query_one("#command-input", Input).value == "v"
         await pilot.press("enter")
         await pilot.pause()
-        assert dash.location == "Home|View"
+        assert dash.crumbs == ("Home", "View")
 
 
 async def test_shortcut_matching_ignores_case_and_surrounding_spaces():
@@ -401,8 +401,8 @@ async def test_every_displayed_shortcut_activates_its_item(path, size, i):
         await enter_by_displayed_shortcut(pilot, path)
         dash = app.query_one("#dashboard", Dashboard)
         nav = app.query_one("#nav-bar", NavBar)
-        here = "|".join(["Home", *path])
-        assert dash.location == here and len(nav.items) == size
+        here = ("Home", *path)
+        assert dash.crumbs == here and len(nav.items) == size
         assert is_sentinel(nav.items[-1]) and (nav_kind(nav.items[-1]) == "exit") is (not path)
         item = nav.items[i]
         shortcut = displayed_shortcut(nav, i)
@@ -415,9 +415,9 @@ async def test_every_displayed_shortcut_activates_its_item(path, size, i):
             await wait_for(lambda: app.return_code is not None, what="the app to exit")
             assert app.return_code == 0
         elif nav_kind(item) == "back":
-            assert dash.location == "|".join(["Home", *path[:-1]])
+            assert dash.crumbs == ("Home", *path[:-1])
         elif item.children:
-            assert dash.location == f"{here}|{item.label}"
+            assert dash.crumbs == (*here, item.label)
         else:
             assert calls.names == [item.label]
         assert "Unknown command" not in panel_text(app)
@@ -439,12 +439,12 @@ async def test_back_cell_reads_b_back_and_the_escape_key_still_goes_back():
     async with app.run_test(size=SIZE) as pilot:
         dash = app.query_one("#dashboard", Dashboard)
         await type_command(pilot, "s")
-        assert dash.location == "Home|Sub"
+        assert dash.crumbs == ("Home", "Sub")
         shown = widget_text(app.query_one("#nav-bar", NavBar))
         assert "b Back" in shown and "esc" not in shown.lower()
         await pilot.press("escape")
         await pilot.pause()
-        assert dash.location == "Home"
+        assert dash.crumbs == ("Home",)
 
 
 async def test_demo_walk_using_only_the_shortcuts_the_nav_bar_displays():
@@ -454,13 +454,13 @@ async def test_demo_walk_using_only_the_shortcuts_the_nav_bar_displays():
         dash = app.query_one("#dashboard", Dashboard)
         nav = app.query_one("#nav-bar", NavBar)
         await enter_by_displayed_shortcut(pilot, ("Settings", "Audio"))
-        assert dash.location == "Home|Settings|Audio"
+        assert dash.crumbs == ("Home", "Settings", "Audio")
         back = displayed_shortcut(nav, len(nav.items) - 1)
         assert nav_kind(nav.items[-1]) == "back" and back
         await type_command(pilot, back)
-        assert dash.location == "Home|Settings"
+        assert dash.crumbs == ("Home", "Settings")
         await type_command(pilot, displayed_shortcut(nav, len(nav.items) - 1))
-        assert dash.location == "Home"
+        assert dash.crumbs == ("Home",)
         exit_shortcut = displayed_shortcut(nav, len(nav.items) - 1)
         assert nav_kind(nav.items[-1]) == "exit" and exit_shortcut
         await type_command(pilot, exit_shortcut)

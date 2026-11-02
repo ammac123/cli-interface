@@ -261,26 +261,26 @@ async def test_demo_walkthrough_with_the_smoke_test_expectations_updated(fast_wo
     async with app.run_test(size=SIZE) as pilot:
         dash = app.query_one("#dashboard", Dashboard)
         entry = app.query_one("#command-input", Input)
-        assert dash.location == "Home"
+        assert dash.crumbs == ("Home",)
 
         # 1. a lone shortcut key no longer navigates; with Enter it does
         await pilot.press("v")
         await pilot.pause()
-        assert dash.location == "Home" and entry.value == "v"
+        assert dash.crumbs == ("Home",) and entry.value == "v"
         entry.value = ""
         await pilot.press("v", "enter")
         await pilot.pause()
-        assert dash.location == "Home|View Output"
+        assert dash.crumbs == ("Home", "View Output")
 
         # 2. a view renders, escape goes back, arrows + Enter enter Settings
         await pilot.press("j", "enter")
         assert "server" in await read_panel(pilot)
         await pilot.press("escape")
         await pilot.pause()
-        assert dash.location == "Home"
+        assert dash.crumbs == ("Home",)
         await pilot.press("down", "down", "enter")
         await pilot.pause()
-        assert dash.location == "Home|Settings"
+        assert dash.crumbs == ("Home", "Settings")
 
         # 3. prompt modal and its result
         await pilot.press("p", "enter")
@@ -403,9 +403,9 @@ async def test_reset_all_restores_the_defaults_and_goes_back_to_the_home_menu():
         await type_command(pilot, "p")
         await pilot.press("7", "0", "7", "0", "enter")
         await pilot.pause()
-        assert dash.location == "Home|Settings"
+        assert dash.crumbs == ("Home", "Settings")
         await type_command(pilot, "x")
-        assert dash.location == "Home"
+        assert dash.crumbs == ("Home",)
         assert count(panel_text(app), "All settings reset to defaults") == 1
         await type_command(pilot, "s")
         shown = widget_text(app.query_one("#nav-bar", NavBar))

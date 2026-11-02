@@ -29,9 +29,9 @@ def requirement(name: str) -> Requirement:
 
 # --------------------------------------------------------------------------- P1.3: declared support
 
-def test_python_3_11_or_newer_is_required():
-    assert PROJECT["requires-python"] == ">=3.11"
-    assert sys.version_info >= (3, 11)
+def test_python_3_13_or_newer_is_required():
+    assert PROJECT["requires-python"] == ">=3.13"
+    assert sys.version_info >= (3, 13)
 
 
 def test_the_runtime_dependencies_are_exactly_rich_and_textual():
@@ -53,9 +53,9 @@ def test_the_installed_dependencies_satisfy_the_declared_ranges():
         assert Version(version(name)) in requirement(name).specifier, name
 
 
-def test_the_classifiers_name_python_3_11_to_3_14_and_a_typed_package():
+def test_the_classifiers_name_python_3_13_and_3_14_and_a_typed_package():
     classifiers = PROJECT["classifiers"]
-    for minor in range(11, 15):
+    for minor in range(13, 15):
         assert f"Programming Language :: Python :: 3.{minor}" in classifiers
     assert "Typing :: Typed" in classifiers
 
@@ -64,7 +64,7 @@ def test_the_lock_file_records_the_same_requirements_as_pyproject():
     (own,) = [p for p in LOCK["package"] if p["name"] == "cli-interface"]
     declared = {item["name"]: item["specifier"] for item in own["metadata"]["requires-dist"]}
     assert declared == {"rich": ">=13.3.3", "textual": ">=0.80,<9"}
-    assert LOCK["requires-python"] == ">=3.11"
+    assert LOCK["requires-python"] == ">=3.13"
 
 
 def test_the_locked_versions_satisfy_the_declared_ranges():
@@ -173,7 +173,7 @@ async def test_examples_main_builds_the_demo_app_and_returns_the_apps_exit_code(
     (app,) = runs
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
-        assert app.query_one("#dashboard").location == "Home"
+        assert app.query_one("#dashboard").crumbs == ("Home",)
         assert "View Output" in str(app.query_one("#nav-bar").render())
 
 
@@ -181,13 +181,13 @@ async def test_examples_main_builds_the_demo_app_and_returns_the_apps_exit_code(
 
 def test_ruff_is_configured_for_the_project_python_and_the_agreed_rule_families():
     ruff = PYPROJECT["tool"]["ruff"]
-    assert ruff["target-version"] == "py311" and ruff["line-length"] == 120
+    assert ruff["target-version"] == "py313" and ruff["line-length"] == 120
     assert set(ruff["lint"]["select"]) >= {"E4", "E7", "E9", "F", "UP", "B"}
 
 
 def test_mypy_is_configured_for_the_project_python():
     mypy = PYPROJECT["tool"]["mypy"]
-    assert mypy["python_version"] == "3.11" and mypy["check_untyped_defs"] is True
+    assert mypy["python_version"] == "3.13" and mypy["check_untyped_defs"] is True
 
 
 def test_the_dependency_groups_separate_test_lint_and_dev():
@@ -197,11 +197,11 @@ def test_the_dependency_groups_separate_test_lint_and_dev():
     assert {"include-group": "test"} in groups["dev"] and {"include-group": "lint"} in groups["dev"]
 
 
-def test_the_ci_matrix_covers_three_operating_systems_and_python_3_11_to_3_14():
+def test_the_ci_matrix_covers_three_operating_systems_and_python_3_13_and_3_14():
     for os_name in ("ubuntu-latest", "macos-latest", "windows-latest"):
         assert re.search(rf"^\s+os: \[.*{os_name}.*\]", CI, re.M), os_name
     matrix = re.search(r"^\s+python: \[(.*)\]", CI, re.M)
-    assert matrix is not None and re.findall(r'"(3\.\d+)"', matrix.group(1)) == ["3.11", "3.12", "3.13", "3.14"]
+    assert matrix is not None and re.findall(r'"(3\.\d+)"', matrix.group(1)) == ["3.13", "3.14"]
 
 
 def test_the_ci_has_lowest_direct_legs_that_check_the_textual_floor():

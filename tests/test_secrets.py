@@ -294,3 +294,277 @@ def test_equality_and_replace_still_work_on_secret_items():
     assert dataclasses.replace(item, label="n").current_value == "SECRET123"
     assert item == MenuItem("Token", prompt="p", current_value="SECRET123", secret=True)
     assert item != MenuItem("Token", prompt="p", current_value="other", secret=True)
+
+
+# =========================================================================== Phase 2: secret jobs (threads, loops, tracebacks, payloads)
+
+import ast  # noqa: E402
+import json  # noqa: E402
+import logging  # noqa: E402
+import sys  # noqa: E402
+import threading  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from cli_interface import CLIApp, Context  # noqa: E402
+from cli_interface.events import validate_event  # noqa: E402
+from helpers import make_gate, type_command, wait_event  # noqa: E402
+
+PACKAGE = Path(__file__).resolve().parent.parent / "cli_interface"
+M1_SECRETS = ["hunter2", "123456", 'q"u\\o', "pässwörd"]
+
+
+def spellings(secret: str) -> set[str]:
+    return {secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1], repr(secret)[1:-1],
+            ascii(secret)[1:-1]}
+
+
+async def submit_secret(pilot, secret: str) -> None:
+    """Open the prompt of the single secret item (shortcut ``l``), put ``secret`` in it and confirm."""
+    app = pilot.app
+    mark = app.jobs.mark()
+    await type_command(pilot, "l")
+    assert isinstance(app.screen, PromptScreen)
+    app.screen.query_one("#prompt-input", Input).value = secret
+    await pilot.press("enter")
+    await app.jobs.wait_idle(since=mark, jobs=1)
+    await pilot.pause()
+
+
+def lane_actions() -> dict[str, Callable[..., Any]]:
+    def inline(value):
+        raise RuntimeError(f"login failed for {value}")
+
+    def thread(ctx: Context, value):
+        raise RuntimeError(f"login failed for {value}")
+
+    async def loop(ctx: Context, value):
+        raise RuntimeError(f"login failed for {value}")
+
+    return {"inline": inline, "thread": thread, "loop": loop}
+
+
+@pytest.mark.parametrize("lane", ["inline", "thread", "loop"])
+async def test_a_secret_job_that_raises_shows_a_header_and_traceback_without_the_secret(make_app, lane):
+    app = make_app(MenuItem("Login", shortcut="l", prompt="Password:", secret=True, action=lane_actions()[lane]))
+    async with app.run_test(size=SIZE) as pilot:
+        await submit_secret(pilot, SECRET)
+        lines = panel_lines(app)
+        assert lines[0] == "Error in Login: login failed for ***"
+        assert lines[1] == "Traceback (most recent call last):" and lines[-1] == "RuntimeError: login failed for ***"
+        assert SECRET not in panel_text(app) and "jobs.py" not in panel_text(app)
+
+
+@pytest.mark.parametrize("lane", ["thread", "loop"])
+async def test_a_secret_in_the_cause_of_a_raise_from_chain_is_masked(make_app, lane):
+    def chained(value):
+        try:
+            raise ConnectionError(f"password={value} rejected")
+        except ConnectionError as cause:
+            raise RuntimeError("could not log in") from cause
+
+    async def achained(ctx: Context, value):
+        chained(value)
+
+    def tchained(ctx: Context, value):
+        chained(value)
+
+    app = make_app(MenuItem("Login", shortcut="l", prompt="Password:", secret=True,
+                            action=tchained if lane == "thread" else achained))
+    async with app.run_test(size=SIZE) as pilot:
+        await submit_secret(pilot, SECRET)
+        text = panel_text(app)
+        assert SECRET not in text and "password=*** rejected" in text
+        assert "direct cause of the following exception" in text and "Error in Login: could not log in" in text
+
+
+async def test_a_local_variable_holding_the_secret_never_reaches_the_panel(make_app):
+    def action(ctx: Context, value):
+        api_key = value  # noqa: F841
+        token = f"Bearer {value}"  # noqa: F841
+        raise ValueError("configuration is invalid")
+
+    app = make_app(MenuItem("Login", shortcut="l", prompt="Password:", secret=True, action=action))
+    async with app.run_test(size=SIZE) as pilot:
+        await submit_secret(pilot, SECRET)
+        text = panel_text(app)
+        assert "configuration is invalid" in text and SECRET not in text and "Bearer" not in text
+
+
+def test_show_locals_true_appears_nowhere_in_the_package():
+    offenders = []
+    for path in sorted(PACKAGE.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.keyword) and node.arg == "show_locals":
+                if not (isinstance(node.value, ast.Constant) and node.value.value is False):
+                    offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == []
+
+
+async def test_a_secret_jobs_log_print_stderr_and_panel_output_are_all_redacted(make_app):
+    def action(ctx: Context, value):
+        ctx.log(f"log {value}")
+        ctx.log.warning(f"warn {value}", markup=True)
+        print(f"print {value}")
+        sys.stderr.write(f"stderr {value}\n")
+        ctx.panel.text(f"panel {value}")
+        ctx.panel.log(f"panel log {value}", "ERROR")
+        ctx.panel.rule(f"rule {value}")
+        ctx.status(f"status {value}")
+        ctx.progress(1, 3, f"progress {value}")
+        return f"returned {value}"
+
+    app = make_app(MenuItem("Login", shortcut="l", prompt="Password:", secret=True, action=action))
+    async with app.run_test(size=SIZE) as pilot:
+        await submit_secret(pilot, SECRET)
+        text = panel_text(app)
+        assert SECRET not in text and text.count("***") >= 6
+        assert "log ***" in text and "print ***" in text and "stderr ***" in text and "panel ***" in text
+        assert panel_lines(app)[-1] == "Executed: Login", "the return value is not shown at all"
+        assert "returned" not in text
+
+
+async def test_the_same_job_without_secret_shows_the_value_so_the_assertions_can_fail(make_app):
+    def action(ctx: Context, value):
+        ctx.log(f"log {value}")
+        print(f"print {value}")
+        return f"returned {value}"
+
+    app = make_app(MenuItem("Login", shortcut="l", prompt="Password:", action=action))
+    async with app.run_test(size=SIZE) as pilot:
+        await submit_secret(pilot, SECRET)
+        text = panel_text(app)
+        assert f"log {SECRET}" in text and f"print {SECRET}" in text and f"Executed: Login → returned {SECRET}" in text
+
+
+async def test_an_async_secret_job_masks_its_output_too(make_app):
+    async def action(ctx: Context, value):
+        ctx.log(f"async {value}")
+        print(f"async print {value}")
+        return value
+
+    app = make_app(MenuItem("Login", shortcut="l", prompt="Password:", secret=True, action=action))
+    async with app.run_test(size=SIZE) as pilot:
+        await submit_secret(pilot, SECRET)
+        assert SECRET not in panel_text(app) and "async ***" in panel_text(app)
+
+
+async def test_an_empty_secret_value_leaves_a_jobs_text_untouched(make_rig):
+    rig = make_rig(capture=True)
+
+    def action(ctx: Context, value):
+        ctx.log("plain text stays")
+        print("so does this")
+        raise ValueError("and this error")
+
+    await rig.run(action, "Login", value="", secret=True)
+    assert rig.host.lines() == ["plain text stays", "so does this", "Error in Login: and this error"]
+
+
+async def test_the_secret_is_absent_from_debug_logs_the_job_repr_and_the_abandoned_line(make_rig, caplog):
+    rig = make_rig()
+    gate, started = make_gate(), threading.Event()
+
+    def stuck(ctx: Context, value):
+        started.set()
+        gate.wait(15)
+
+    def boom(ctx: Context, value):
+        raise ValueError(f"bad {value}")
+
+    with caplog.at_level(logging.DEBUG):
+        await rig.run(boom, "Boom", value=SECRET, secret=True)
+        job = rig.submit(stuck, "Stuck", value=SECRET, secret=True)
+        await wait_event(started)
+        rig.mgr.request_cancel()
+        rig.mgr.request_cancel()
+        gate.set()
+    shown = caplog.text + repr(job) + str(job) + repr(rig.host.events) + repr(rig.mgr._dump())
+    assert SECRET not in shown and "Abandoned: Stuck" in repr(rig.host.events)
+
+
+# ---- M1: json / table / csv / array / pretty payloads of a secret job, end to end
+
+@pytest.mark.parametrize("secret", M1_SECRETS)
+async def test_payload_methods_of_a_secret_job_never_show_the_secret_in_any_spelling(make_app, monkeypatch, secret):
+    seen: list[dict[str, Any]] = []
+    original = CLIApp._sink_event
+    monkeypatch.setattr(CLIApp, "_sink_event", lambda self, event: (seen.append(event), original(self, event))[1])
+
+    def leak(ctx: Context, value):
+        ctx.panel.json({"token": value, value: [value, {"deep": value}], "pin": 123456}, "title " + value)
+        ctx.panel.array([value, (value,), {value}])
+        ctx.panel.pretty({"k": value, value: 1})
+        ctx.panel.table([{"name": value, value: 1}, {"name": "ok"}], title=value)
+        ctx.panel.table([[value, 2], [3, value]], headers=["a", value])
+        ctx.panel.csv(f'a,b\n"{value.replace(chr(34), chr(34) * 2)}",2', title=value)
+
+    app = make_app(MenuItem("Leak", shortcut="l", prompt="Secret:", secret=True, action=leak))
+    async with app.run_test(size=SIZE) as pilot:
+        await submit_secret(pilot, secret)
+        text = panel_text(app)
+        job_events = [e for e in seen if e.get("job") is not None]
+    blob = "\n".join(json.dumps(e, default=str) + repr(e) for e in job_events)
+    for form in spellings(secret):
+        assert form not in text, ("panel", form)
+        assert form not in blob, ("events", form)
+    assert "***" in text and "Executed: Leak" in text
+    payload_events = [e for e in job_events if e["kind"] in ("json", "table")]
+    assert len(payload_events) == 6
+    for e in payload_events:
+        assert validate_event(e) == [] and e["job"] == 1 and e["scroll"] == "top"
+        if e["kind"] == "json":
+            assert isinstance(e["data"], str) and e["pretty"] is False
+        else:
+            assert all(isinstance(k, str) and isinstance(v, str) for row in e["rows"] if isinstance(row, dict)
+                       for k, v in row.items())
+
+
+@pytest.mark.parametrize("secret", M1_SECRETS)
+async def test_the_non_secret_control_shows_the_payload_and_keeps_the_same_object(make_app, monkeypatch, secret):
+    seen: list[dict[str, Any]] = []
+    original = CLIApp._sink_event
+    monkeypatch.setattr(CLIApp, "_sink_event", lambda self, event: (seen.append(event), original(self, event))[1])
+    payload = {"token": secret}
+
+    def leak(ctx: Context, value):
+        ctx.panel.pretty(payload)
+
+    app = make_app(MenuItem("Leak", shortcut="l", prompt="Value:", action=leak))
+    async with app.run_test(size=SIZE) as pilot:
+        await submit_secret(pilot, secret)
+        text = panel_text(app)
+        (event,) = [e for e in seen if e["kind"] == "json"]
+    assert event["pretty"] is True and event["data"] == payload
+    assert "token" in text
+
+
+async def test_a_threaded_secret_jobs_content_method_is_not_clobbered_by_the_end_of_the_action(make_app):
+    def leak(ctx: Context, value):
+        ctx.panel.json({"k": value})
+
+    app = make_app(MenuItem("Leak", shortcut="l", prompt="Value:", secret=True, action=leak))
+    async with app.run_test(size=SIZE) as pilot:
+        await submit_secret(pilot, SECRET)
+        log = app.screen_stack[0].query_one("#display-panel")
+        assert '"k": "***"' in panel_text(app) and log.auto_scroll is False, "content mode survives the action end"
+
+
+async def test_rich_objects_written_by_a_secret_job_fall_back_to_their_redacted_plain_text(make_app):
+    from rich.text import Text
+
+    def action(ctx: Context, value):
+        ctx.panel.text(Text(f"text obj {value}", style="bold"))
+        ctx.panel.log(Text(f"log obj {value}"), "ERROR")
+        ctx.panel.rule(Text(f"rule obj {value}"))
+        ctx.panel.renderable(Text(f"renderable {value}"))
+        ctx.panel.table([[Text(f"cell {value}")]], headers=[Text(f"head {value}")])  # type: ignore[list-item]
+        return Text(f"returned {value}")
+
+    app = make_app(MenuItem("Login", shortcut="l", prompt="Password:", secret=True, action=action))
+    async with app.run_test(size=SIZE) as pilot:
+        await submit_secret(pilot, SECRET)
+        text = panel_text(app)
+        assert SECRET not in text
+        for expected in ("text obj ***", "log obj ***", "rule obj ***", "renderable ***", "cell ***", "head ***"):
+            assert expected in text, expected
+        assert "returned" not in text

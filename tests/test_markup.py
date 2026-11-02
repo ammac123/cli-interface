@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 import json
+import sys
+import threading
 
 import pytest
+from rich.panel import Panel
 from rich.text import Text
 from textual.widgets import Input, RichLog
 
+from cli_interface import App, Context
 from cli_interface.menu import MenuItem
 from cli_interface.theme import LEVEL_STYLES
 from cli_interface.widgets import Dashboard, NavBar, PromptScreen
 from helpers import (
-    HOSTILE, SIZE, color_of, leaf, line_segments, read_panel, widget_text,
+    HOSTILE, SIZE, color_of, leaf, line_segments, make_gate, panel_text, press_and_wait, read_panel, type_command,
+    wait_event, widget_text,
 )
 
 WIDE = [{"filler": "." * 60}]  # titles wrap on narrow tables, so give the table room
@@ -311,3 +316,286 @@ async def test_framework_authored_hint_keeps_its_markup(make_app):
         await pilot.pause()
         hint = widget_text(app.query_one("#hint"))
         assert "[/]" not in hint and "navigate" in hint and "select" in hint
+
+
+# =========================================================================== Phase 2: job-origin output is literal too
+
+NO_SLASH = [s for s in HOSTILE if "/" not in s]
+
+
+def hostile_app(**kwargs) -> App:
+    """An App whose one command runs ``ctx.state.body(ctx, ctx.state.sample)`` for the sample the test sets."""
+    app = App("Hostile", **kwargs)
+
+    @app.command("Run", key="r")
+    def run(ctx: Context):
+        return ctx.state.body(ctx, ctx.state.sample)
+
+    return app
+
+
+async def run_body(pilot, body, sample="x", *, clear=True):
+    """Run the command once with ``body`` and ``sample``; returns the panel text, then clears the panel."""
+    app = pilot.app
+    app.state.body, app.state.sample = body, sample
+    await press_and_wait(pilot, "r", "enter")
+    text = panel_text(app)
+    if clear:
+        app.panel.clear()
+        await pilot.pause()
+    return text
+
+
+async def test_print_and_stderr_in_a_job_are_literal_for_every_hostile_sample():
+    app = hostile_app()
+
+    def body(ctx, sample):
+        print(sample)
+        sys.stderr.write(sample + "\n")
+        print(sample, end="")
+
+    async with app.run_test(size=SIZE) as pilot:
+        for sample in HOSTILE:
+            text = await run_body(pilot, body, sample)
+            assert text.count(sample) == 3, (sample, text)
+            assert "Executed: Run" in text and app.is_running
+
+
+async def test_stderr_lines_of_a_job_use_the_warning_colour_and_stdout_lines_are_not_styled():
+    app = hostile_app()
+    async with app.run_test(size=SIZE) as pilot:
+        await run_body(pilot, lambda ctx, s: (print("to out"), sys.stderr.write("to err\n")), clear=False)
+        assert {color_of(s) for t, s in line_segments(app, "to err") if t.strip()} == {"#e5c07b"}
+        assert "#e5c07b" not in {color_of(s) for t, s in line_segments(app, "to out") if t.strip()}
+
+
+async def test_a_returned_hostile_string_is_literal_on_the_executed_line():
+    app = hostile_app()
+    async with app.run_test(size=SIZE) as pilot:
+        for sample in HOSTILE:
+            text = await run_body(pilot, lambda ctx, s: s, sample)
+            assert f"Executed: Run → {sample}" in text.splitlines() and app.is_running
+
+
+async def test_returned_multiline_dict_and_list_of_dicts_values_are_literal_blocks():
+    app = hostile_app()
+    async with app.run_test(size=SIZE) as pilot:
+        text = await run_body(pilot, lambda ctx, s: "\n".join(f"line {x}" for x in HOSTILE))
+        assert all(f"line {x}" in text for x in HOSTILE)
+        text = await run_body(pilot, lambda ctx, s: {x: [x, {"n": x}] for x in HOSTILE})
+        assert all(json.dumps(x) in text for x in HOSTILE), text
+        text = await run_body(pilot, lambda ctx, s: [{"col": x, x: x} for x in HOSTILE])
+        assert all(x in text for x in HOSTILE) and "Executed: Run" in text
+        assert any(ch in text for ch in "┏┌╭"), "drawn as a table"
+        assert app.is_running and app.return_code is None
+
+
+async def test_a_returned_text_object_keeps_its_own_style_and_a_returned_panel_shows_text_inside_literally():
+    app = hostile_app()
+    async with app.run_test(size=SIZE) as pilot:
+        text = await run_body(pilot, lambda ctx, s: Text("styled [text]", style="bold red"), clear=False)
+        style = dict(line_segments(app, "styled"))["styled [text]"]
+        assert style.bold and style.color.name == "red" and "Executed: Run" in text
+        app.panel.clear()
+        await pilot.pause()
+        text = await run_body(pilot, lambda ctx, s: Panel(Text("\n".join(HOSTILE)), title=Text("t[/x]")))
+        assert all(x in text for x in HOSTILE) and "t[/x]" in text
+
+
+async def test_ctx_log_is_literal_by_default_and_opt_in_markup_falls_back_when_it_does_not_parse():
+    app = hostile_app()
+
+    def body(ctx, sample):
+        ctx.log(sample)
+        ctx.log.warning(sample)
+        ctx.log("bad [/zz] markup", markup=True)
+        ctx.log("[bold]hi[/bold] there", markup=True)
+
+    async with app.run_test(size=SIZE) as pilot:
+        for sample in HOSTILE:
+            text = await run_body(pilot, body, sample)
+            assert text.splitlines().count(sample) == 2, (sample, text)
+            assert "bad [/zz] markup" in text and "hi there" in text and "[bold]hi" not in text
+        assert app.is_running
+
+
+async def test_ctx_panel_surfaces_render_hostile_text_verbatim_when_called_from_a_job():
+    app = hostile_app()
+    surfaces = {name: pair for name, pair in SURFACES.items() if name != "log-text-object"}
+
+    def body(ctx, sample):
+        for name, (call, _expected) in surfaces.items():
+            call(ctx.panel, f"{sample}#{name}")
+
+    async with app.run_test(size=SIZE) as pilot:
+        for sample in HOSTILE:
+            text = await run_body(pilot, body, sample)
+            for name, (_call, expected) in surfaces.items():
+                assert expected(f"{sample}#{name}") in text, (name, sample)
+
+
+async def test_status_and_progress_labels_render_literally_in_the_dashboard():
+    app = hostile_app()
+    reached, proceed = threading.Event(), make_gate()
+
+    def body(ctx, sample):
+        ctx.status(sample)
+        reached.set()
+        proceed.wait(15)
+
+    async with app.run_test(size=SIZE) as pilot:
+        app.state.body = body
+        for sample in HOSTILE:
+            app.state.sample = sample
+            proceed.clear()
+            reached.clear()
+            mark = app.jobs.mark()
+            await pilot.press("r", "enter")
+            await wait_event(reached)
+            await pilot.pause()
+            dash = app.screen_stack[0].query_one("#dashboard", Dashboard)
+            assert isinstance(dash.render(), Text) and dash.render().plain.endswith(f" {sample}"), sample
+            assert f" {sample}" in widget_text(dash).splitlines()[2]
+            proceed.set()
+            await app.jobs.wait_idle(since=mark, jobs=1)
+
+
+async def test_progress_labels_with_markup_characters_are_literal_too():
+    app = hostile_app()
+    reached, proceed = threading.Event(), make_gate()
+
+    def body(ctx, sample):
+        ctx.progress(3, 10, sample)
+        reached.set()
+        proceed.wait(15)
+
+    async with app.run_test(size=SIZE) as pilot:
+        app.state.body = body
+        app.state.sample = "[/x] matrix[i][j]"
+        mark = app.jobs.mark()
+        await pilot.press("r", "enter")
+        await wait_event(reached)
+        await pilot.pause()
+        dash = app.screen_stack[0].query_one("#dashboard", Dashboard)
+        assert dash.render().plain.endswith("[/x] matrix[i][j] 3/10 (30%)")
+        proceed.set()
+        await app.jobs.wait_idle(since=mark, jobs=1)
+
+
+async def test_exception_message_and_traceback_lines_of_a_job_are_literal():
+    app = hostile_app()
+
+    def body(ctx, sample):
+        raise ValueError(sample)
+
+    async with app.run_test(size=SIZE) as pilot:
+        for sample in HOSTILE:
+            lines = (await run_body(pilot, body, sample)).splitlines()
+            assert lines[0] == f"Error in Run: {sample}", (sample, lines[:2])
+            assert lines[-1] == f"ValueError: {sample}"
+            assert app.is_running and app.return_code is None
+
+
+async def test_a_hostile_message_in_a_chained_cause_stays_literal():
+    app = hostile_app()
+
+    def body(ctx, sample):
+        try:
+            raise KeyError(sample)
+        except KeyError as exc:
+            raise RuntimeError(f"outer {sample}") from exc
+
+    async with app.run_test(size=SIZE) as pilot:
+        for sample in HOSTILE:
+            text = await run_body(pilot, body, sample)
+            assert f"Error in Run: outer {sample}" in text and f"RuntimeError: outer {sample}" in text
+            assert "KeyError" in text and "direct cause" in text
+
+
+async def test_hostile_command_labels_are_literal_in_executed_and_error_lines():
+    app = App("Labels")
+    for i, sample in enumerate(NO_SLASH):
+        app.add_command(sample, lambda: "ok", key=f"a{i}")
+        app.add_command(sample + "!", lambda: 1 / 0, key=f"e{i}")
+    async with app.run_test(size=SIZE) as pilot:
+        for i in range(len(NO_SLASH)):
+            await press_and_wait(pilot, *f"a{i}", "enter")
+            await press_and_wait(pilot, *f"e{i}", "enter")
+        text = panel_text(app)
+        for sample in NO_SLASH:
+            assert f"Executed: {sample} → ok" in text and f"Error in {sample}!: division by zero" in text
+        assert app.is_running
+
+
+@pytest.mark.parametrize("sample", ["matrix[i][j]", "["])
+async def test_a_hostile_command_label_is_literal_in_busy_and_cancelled_lines(sample):
+    app = App("Labels")
+    started, release = threading.Event(), make_gate()
+
+    def slow(ctx):
+        started.set()
+        release.wait(15)
+        ctx.check_cancelled()
+
+    app.add_command(sample, slow, key="c", cancellable=True)
+    app.add_command("Other", lambda: "never", key="o")
+    async with app.run_test(size=SIZE) as pilot:
+        mark = app.jobs.mark()
+        await pilot.press("c", "enter")
+        await wait_event(started)
+        await pilot.press("o", "enter")
+        await pilot.pause()
+        await pilot.press(*"stop", "enter")
+        release.set()
+        await app.jobs.wait_idle(since=mark, jobs=1)
+        await pilot.pause()
+        text = panel_text(app)
+        assert f"Busy: {sample} is running (type stop to stop it)" in text
+        assert f"Cancelled: {sample}" in text and app.is_running
+
+
+async def test_hostile_command_paths_become_literal_menu_labels_and_crumbs():
+    app = App("Paths")
+    app.add_command("[/x]/Leaf", lambda: "leaf ran", key="l")
+    app.group("[", key="g")
+    app.add_command("matrix[i][j]", lambda: None, key="m")
+    app.add_command("a|b", lambda: None, key="p")
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        nav = app.screen_stack[0].query_one("#nav-bar", NavBar)
+        rendered = nav.render().plain
+        assert "g [" in rendered and "m matrix[i][j]" in rendered and "p a|b" in rendered
+        await type_command(pilot, "g")
+        dash = app.screen_stack[0].query_one("#dashboard", Dashboard)
+        assert dash.crumbs == ("Paths", "[") and dash.render().plain.startswith(" Paths › [\n")
+        assert "x]" in nav.render().plain
+        assert app.is_running
+
+
+async def test_no_str_reaches_richlog_write_for_job_origin_events(monkeypatch):
+    app = hostile_app()
+
+    def body(ctx, sample):
+        ctx.log(sample)
+        ctx.log(sample, markup=True)
+        ctx.status(sample)
+        ctx.progress(1, 2, sample)
+        print(sample)
+        sys.stderr.write(sample + "\n")
+        for call, _expected in SURFACES.values():
+            call(ctx.panel, sample)
+        return {sample: [{sample: sample}]}
+
+    async with app.run_test(size=SIZE) as pilot:
+        widget = app.screen_stack[0].query_one("#display-panel", RichLog)
+        written: list[object] = []
+        original = widget.write
+        monkeypatch.setattr(widget, "write", lambda content, *a, **k: (written.append(content), original(content, *a, **k))[1])
+        for sample in HOSTILE:
+            await run_body(pilot, body, sample, clear=False)
+        await run_body(pilot, lambda ctx, s: [{s: s}], clear=False)
+        await run_body(pilot, lambda ctx, s: 1 / 0, clear=False)
+        await run_body(pilot, lambda ctx, s: "a\nb", clear=False)
+        assert written
+        strings = [c for c in written if isinstance(c, str)]
+        assert strings == [], f"markup-capable str reached RichLog.write: {strings[:3]}"

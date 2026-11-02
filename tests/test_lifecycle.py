@@ -137,7 +137,7 @@ def headless_run(monkeypatch):
             async with self.run_test(size=SIZE) as pilot:
                 await pilot.pause()
                 seen["max_lines"] = self.query_one("#display-panel", RichLog).max_lines
-                seen["location"] = self.query_one("#dashboard", Dashboard).location
+                seen["crumbs"] = self.query_one("#dashboard", Dashboard).crumbs
                 self.exit(return_code=seen["return_code"])
 
         seen["runs"] += 1
@@ -185,7 +185,7 @@ def test_run_without_strict_shortcuts_warns_instead(headless_run):
 def test_run_passes_its_menu_through_to_the_app(headless_run):
     root = menu(leaf("A", "a"), label="Custom root")
     run(root)
-    assert headless_run["location"] == "Custom root"
+    assert headless_run["crumbs"] == ("Custom root",)
 
 
 # --------------------------------------------------------------------------- CF-10: max_lines

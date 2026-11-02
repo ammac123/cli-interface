@@ -1,6 +1,7 @@
 """Widgets used by ``CLIApp``: the prompt dialog (``PromptScreen``), the header (``Dashboard``) and the menu strip (``NavBar``)."""
 from __future__ import annotations
 
+from rich.cells import cell_len
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -111,22 +112,18 @@ class Dashboard(Static):
     """
     Top bar showing navigation breadcrumb, idle phrase, and optional spinner.
 
-    ``crumbs`` is the breadcrumb as a tuple of labels. While it is ``None``,
-    ``location`` (labels joined with ``"|"``) is split instead, so a label that
-    itself contains ``"|"`` is displayed as separate crumbs.
+    ``crumbs`` is the breadcrumb as a tuple of labels.
     """
 
-    location      = reactive("Home")
-    crumbs: reactive[tuple[str, ...] | None] = reactive(None)
+    crumbs: reactive[tuple[str, ...]] = reactive(("Home",))
     status        = reactive(get_phrase("idle"))
     spinning      = reactive(False)
     spinner_frame = reactive(0)
     spinner_label = reactive("")
 
     def render(self) -> Text:
-        crumbs = self.crumbs if self.crumbs is not None else self.location.split("|")
         sep    = Text(" › ", style=_DIM_FG)
-        path   = sep.join(Text(c, style=f"bold {_ORANGE}") for c in crumbs)
+        path   = sep.join(Text(c, style=f"bold {_ORANGE}") for c in self.crumbs)
         if self.spinning:
             frame  = _SPINNER_FRAMES[self.spinner_frame % len(_SPINNER_FRAMES)]
             label  = self.spinner_label or "working…"
@@ -199,13 +196,13 @@ class NavBar(Static):
         return snap[key]
 
     def _compute_item_width(self, item: MenuItem) -> int:
-        """Visible character width of an unselected item cell (a selected cell is two columns narrower)."""
+        """Visible width in terminal cells of an unselected item cell (a selected cell is two columns narrower)."""
         label, value = self._resolve(item)
         shortcut  = item.shortcut.strip()
-        sc        = len(shortcut) + 1 if shortcut else 0
-        val       = len(f" ({value})") if value is not None else 0
+        sc        = cell_len(shortcut) + 1 if shortcut else 0
+        val       = cell_len(f" ({value})") if value is not None else 0
         arrow     = 2 if (not item.is_leaf and not isinstance(item, _NavCell)) else 0
-        return 4 + sc + len(label) + val + arrow   # 4 = leading + trailing padding
+        return 4 + sc + cell_len(label) + val + arrow   # 4 = leading + trailing padding
 
     def _layout_rows(self, width: int) -> list[list[int]]:
         """Pack item indices into rows, starting a new row when the current one is full."""

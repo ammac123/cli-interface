@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import sys
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -9,9 +10,10 @@ from typing import Any
 import pytest
 
 from cli_interface.app import CLIApp
+from cli_interface.capture import CAPTURE
 from cli_interface.menu import MenuItem
 from cli_interface.log_handler import TUILogHandler
-from helpers import ThreadWatch
+from helpers import GATES, ThreadWatch
 
 
 _UNIQUE = itertools.count()
@@ -39,6 +41,55 @@ def root_logger_guard(request):
     root.setLevel(level)
     if leaked and request.node.get_closest_marker("allow_tui_handler_leak") is None:
         pytest.fail(f"test leaked a TUILogHandler onto the root logger: {leaked}", pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def runtime_guard():
+    """After every test: release the job gates, let job threads end, then require that no capture ref, app route,
+    job thread or replaced stdout/stderr is left over. A leak is repaired first so it fails only the test that made it."""
+    stdout, stderr = sys.stdout, sys.stderr
+    GATES.clear()
+    yield
+    for gate in GATES:
+        gate.set()
+    GATES.clear()
+    for thread in threading.enumerate():
+        if thread.name.startswith("cli-interface-job-") and thread is not threading.current_thread():
+            thread.join(10)
+    problems = []
+    alive = [t.name for t in threading.enumerate() if t.name.startswith("cli-interface-job-")]
+    if alive:
+        problems.append(f"job threads still alive: {alive}")
+    if CAPTURE.refs != 0:
+        problems.append(f"CAPTURE.refs == {CAPTURE.refs}")
+    if CAPTURE._routes:
+        problems.append(f"{len(CAPTURE._routes)} app route(s) still open")
+    if sys.stdout is not stdout or sys.stderr is not stderr:
+        problems.append("sys.stdout / sys.stderr were not restored (is-identity)")
+    if problems:
+        CAPTURE._refs = 0
+        CAPTURE._holds = 0
+        CAPTURE._outer.clear()
+        CAPTURE._proxies.clear()
+        CAPTURE._routes.clear()
+        sys.stdout, sys.stderr = stdout, stderr
+        pytest.fail("; ".join(problems), pytrace=False)
+
+
+@pytest.fixture
+def make_rig():
+    """Factory for a JobManager over a fake host (call it inside an async test body)."""
+    from jobrig import Rig
+
+    made: list[Rig] = []
+
+    def factory(**kwargs: Any) -> Rig:
+        made.append(Rig(**kwargs))
+        return made[-1]
+
+    yield factory
+    for rig in made:
+        rig.close()
 
 
 @pytest.fixture

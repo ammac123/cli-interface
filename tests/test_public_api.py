@@ -29,7 +29,9 @@ from helpers import SIZE, leaf, menu
 REPO = Path(__file__).resolve().parent.parent
 
 PUBLIC_NAMES = {
+    "App",
     "CLIApp",
+    "Context",
     "DisplayPanel",
     "LogAttachment",
     "LoggingAttachWarning",
@@ -41,7 +43,7 @@ PUBLIC_NAMES = {
     "find_shortcut_conflicts",
     "run",
 }
-INTERNAL_NAMES = ["PanelInbox", "TUILogHandler", "MenuState", "PromptScreen", "Dashboard", "NavBar", "theme"]
+INTERNAL_NAMES = ["PanelInbox", "TUILogHandler", "Job", "JobManager", "MenuState", "PromptScreen", "Dashboard", "NavBar", "theme"]
 
 
 # --------------------------------------------------------------------------- P1.1a: the facade
@@ -200,3 +202,53 @@ def test_pyproject_filters_are_by_category_not_by_message():
     assert "error::cli_interface.LoggingAttachWarning" in filters
     assert "error::pytest.PytestUnhandledThreadExceptionWarning" in filters
     assert not [f for f in filters if "reserved command" in f or "were ignored because" in f or ":UserWarning" in f]
+
+
+# --------------------------------------------------------------------------- Phase 2: App and Context join the facade
+
+def test_the_public_api_is_exactly_thirteen_names():
+    assert len(cli_interface.__all__) == 13 == len(PUBLIC_NAMES)
+    assert {"App", "Context"} <= set(cli_interface.__all__)
+
+
+def test_app_and_context_are_the_real_classes():
+    from cli_interface.commands import App as AppClass
+    from cli_interface.context import Context as ContextClass
+
+    assert cli_interface.App is AppClass and cli_interface.Context is ContextClass
+    assert issubclass(cli_interface.App, cli_interface.CLIApp)
+
+
+@pytest.mark.parametrize("name", ["Job", "JobManager", "JobEmitter", "JobCancelled", "PanelRenderer", "OutputCapture"])
+def test_the_job_machinery_is_not_exported(name):
+    assert name not in cli_interface.__all__ and not hasattr(cli_interface, name)
+
+
+def test_the_original_eleven_names_all_still_resolve():
+    original = PUBLIC_NAMES - {"App", "Context"}
+    assert len(original) == 11 and all(hasattr(cli_interface, n) for n in original)
+
+
+ALL_MODULES_PROBE = """
+import importlib, json, logging, pkgutil, sys
+root = logging.getLogger()
+before = ([type(h).__name__ for h in root.handlers], root.level, logging.lastResort is not None)
+import cli_interface, examples.app_demo
+for info in pkgutil.iter_modules(cli_interface.__path__):
+    importlib.import_module("cli_interface." + info.name)
+named = {name: [type(h).__name__ for h in logging.getLogger(name).handlers]
+         for name in logging.root.manager.loggerDict if name.startswith("cli_interface")}
+after = ([type(h).__name__ for h in root.handlers], root.level, logging.lastResort is not None)
+print(json.dumps({"before": before, "after": after, "named": named, "stdout_is_original": sys.stdout is sys.__stdout__}))
+"""
+
+
+def test_importing_every_module_and_the_demo_configures_no_logging_and_leaves_the_streams_alone():
+    out = subprocess.run(
+        [sys.executable, "-c", ALL_MODULES_PROBE], capture_output=True, text=True, timeout=60, check=True,
+        stdin=subprocess.DEVNULL, cwd=REPO,
+    ).stdout
+    result = json.loads(out.strip().splitlines()[-1])
+    assert result["after"] == result["before"] == [[], logging.WARNING, True]
+    assert all(handlers == [] for handlers in result["named"].values())
+    assert result["stdout_is_original"] is True

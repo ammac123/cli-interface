@@ -2,7 +2,169 @@
 
 All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). There is no tagged release yet; the work
-is grouped by roadmap phase. Baseline for Phase 0 is commit `fdb8069`; for Phase 1 it is `4cab69a`.
+is grouped by roadmap phase. Baseline for Phase 0 is commit `fdb8069`; for Phase 1 it is `4cab69a`; for
+Phase 2 it is `23a8ed1`.
+
+## [Unreleased] - Phase 2 (job runner and Context)
+
+### Added
+- **`App` and `@app.command`.** `App(name="cli-interface", *, strict_shortcuts=False, max_lines=5000,
+  quit_grace=2.0, **textual_kwargs)` is a `CLIApp` whose menu is built from functions:
+  `@app.command("Group/Name", key="", cancellable=False, description=None)`, `app.add_command(path, fn, ...)` and
+  `app.group(path, key=..., description=...)`. Paths create submenus; an empty segment, a taken path or a path
+  through a command is a `ValueError`; shortcut conflicts are reported like those of `CLIApp(menu)`, and a menu
+  edited while the app runs is refreshed. `from cli_interface import ...` now exposes 13 names: `App` and
+  `Context` are the additions.
+- **Every action is a job** (`jobs.py`, `JobManager`, reached as `app.jobs`). An `async` action is awaited on the
+  UI event loop; a function that takes a `Context`, and every `@app.command` function, runs in a daemon thread
+  (`cli-interface-job-N`); a plain context-free `MenuItem` action still runs inline on the UI thread. One job runs
+  at a time: a second start is rejected (not queued) with a `Busy: <label> is running (type stop to stop it)`
+  WARNING, before any prompt opens. The spinner is held for the length of a thread or async job and shows its
+  label, `ctx.status` or `ctx.progress` text; the public `start_spinner` / `stop_spinner` keep their meaning.
+- **`Context`** (`context.py`): `panel` (a thread-safe `DisplayPanel` tagged with the job), `log` (callable, plus
+  `debug`, `info`, `warning`, `error`, `critical`), `progress(current, total, label, *, id, done)`, `status(text)`,
+  `cancelled` (a `threading.Event`, new per job), `check_cancelled()`, `state` (the app's shared
+  `SimpleNamespace`, also `CLIApp.state`), `job`, and the thread-safe `set_menu`, `refresh_menu` and `go_home`.
+  A function asks for it with a `Context` annotation (also `Context | None` and `Optional[Context]`) or an
+  unannotated `ctx` / `context` parameter; a prompt's text goes to the first other positional parameter.
+- **`stop`**, a reserved typed command (it joins `RESERVED_COMMANDS` and the help table; no key is bound). A
+  `cancellable=True` job is cancelled by the first `stop` (`ctx.cancelled` is set and an async job's task is
+  cancelled, ending `Cancelled: <label>`); for any other job the first `stop` only warns, and a second `stop`
+  abandons the job (`Abandoned: <label>` WARNING). With nothing running it says `Nothing is running`.
+- **Quit policy.** `q`, Exit, Ctrl+C or `exit()` (any thread) sets `ctx.cancelled` on the running job, gives it
+  `quit_grace` seconds (new keyword of `CLIApp` and `App`, default 2.0), runs the `on_shutdown` hooks (each bounded
+  by `quit_grace`), then abandons whatever is still running and exits. A job that ignores cancellation is
+  abandoned, its output is ignored and its daemon thread dies with the process. A second `q` skips the wait.
+- **Hooks:** `on_startup`, `on_shutdown`, `before_command` and `after_command` on `CLIApp` and `App`, as
+  decorators or calls. Each takes `fn(ctx)` or `fn()`, sync or async, and runs in registration order.
+  `before_command` can veto a command by raising. `after_command` runs after the result line for every job
+  except an abandoned one.
+- **Return values are shown by type** (`outcome.py`): `None` shows nothing; a one-line `str` or any other object
+  goes on the `Executed: <label> → value` line; a multi-line `str` is a text block; a `dict`, `list`, `tuple` or
+  `set` is JSON; a non-empty list or tuple of dicts is a table; a Rich renderable is rendered; `bytes` and empty
+  containers show their `repr()`. The content comes before the `Executed:` line. A secret job shows no return
+  value.
+- **Full tracebacks (F5).** A failing action shows `Error in <label>: <message>` followed by the whole traceback
+  in dim text, with the chained causes, without the runner's own frames or local variables, and capped at 50,000
+  characters.
+- **`print()` and stderr capture (F9)** (`capture.py`). Inside a job (body, hooks, and what they call on the
+  job's thread or task), `print()` and `sys.stderr` writes become panel lines tagged with the job, stderr in the
+  warning colour, ANSI and control characters removed. Output from threads the job starts itself shows without
+  the job tag. `CLIApp.run_async()` (which `run()` goes through) holds the capture over the real streams until
+  Textual has finished tearing down, so an abandoned job's output cannot reach the terminal. `run_test()` is not
+  covered.
+- **Event schema v1** (`events.py`, standard library only). Every panel write is an event dictionary: `hello`,
+  `log`, `progress`, `text`, `json`, `table`, `result` and `error`, each with `v`, `t` and `kind` (and `job`),
+  plus the in-process-only `clear` and `action`. The module has constructors, `validate_event`, `dumps` (JSON
+  lines), the drop policy and secret redaction. `DisplayPanel` is now a thin facade that builds these events, so
+  `app.panel` and `ctx.panel` are safe from any thread and keep their order; `CLIApp.emit(event)` is the one entry
+  point. `PanelRenderer` draws the events on the UI thread.
+- **The CLI accepts an app.** `cli-interface module:attr` resolves an `App` or `CLIApp` instance, a `MenuItem`,
+  or a callable returning an app or a menu. The `build_menu(app)` rule still works (a callable with a required
+  positional parameter is called with the placeholder `CLIApp`; if it returns an app, that one runs).
+  `--strict-shortcuts` can only tighten an app target and `--max-lines` replaces its scrollback.
+- **`examples/app_demo.py`**: `App`, `@app.command`, `Context`, progress, cancel and the four hooks in one file
+  (`python -m examples.app_demo` or `cli-interface examples.app_demo:app`).
+- **Test hooks on the manager:** `app.jobs.mark()`, `await app.jobs.wait_idle(since=, jobs=, timeout=)` and
+  `await app.jobs.wait_until(predicate)`, plus the reads `state`, `busy`, `current` and `completed`.
+- `app.panel` works before the app has mounted: what is written then is held and shown on start.
+- New modules: `capture.py`, `commands.py`, `context.py`, `events.py`, `jobs.py` and `outcome.py`.
+- Dev only (not shipped): 1,742 tests (was 885) with the shared `tests/jobrig.py` rig and new helpers; they were
+  run on Python 3.13 with Textual 8.2.8 and, before the floor moved, on Python 3.11 with Textual 0.80.0 and Rich
+  13.3.3. `scripts/check_dist.py` knows the new modules and `examples/app_demo.py`.
+- Docs: the README covers the job API, the output capture, secret jobs and the limits; the touched internals
+  have docstrings.
+
+### Changed (behaviour)
+
+Breaking for code written against Phase 1
+- **`requires-python` is now `>=3.13`.** Python 3.11 and 3.12 are no longer supported (Phase 1 had lowered the
+  floor to 3.11). The CI matrix is Ubuntu, macOS and Windows on 3.13 and 3.14, plus two Ubuntu lowest-direct
+  legs (3.13 and 3.14); ruff targets `py313`, mypy `3.13`, the wheel-install check builds its venv on 3.13, and
+  the 3.11 and 3.12 classifiers are gone. The pre-3.12 frame-walk fallback in `warn_external` was removed.
+  `.python-version` is 3.14 and `uv.lock` records `>=3.13`.
+- **`Dashboard.location` is removed** in favour of `Dashboard.crumbs` (a tuple of labels; the default is
+  `("Home",)`). The dead `MenuState.move` is removed too.
+- **`stop` is a reserved command.** A consumer shortcut `stop` now gets a `ShortcutConflictWarning` and can no
+  longer be typed (the item stays reachable by arrow keys and position).
+- **Actions behave differently.** `async` actions are awaited (they used to be called and ignored); a function
+  that takes a `Context` runs in a thread; a failing action shows a traceback; a `dict`, `list` or multi-line
+  `str` result is shown as content above the `Executed:` line instead of one line (the one-line form is
+  unchanged for scalars); a second start while a job runs is rejected.
+- **`app.panel` is thread-safe and ordered.** Every panel write goes through the one ordered queue, so direct
+  `app.panel` calls no longer appear ahead of queued `push_log` records, and `DisplayPanel(widget)` (drawing
+  straight on a `RichLog`, UI thread only) is now the legacy mode: `DisplayPanel(widget=None, *, emitter=None)`
+  takes exactly one of the two.
+- **`PanelInbox(app)` is now `PanelInbox(sink)`** (an object with `emit(event)`, called on the UI thread). It
+  never raises, from any thread. It is internal.
+- A `Text` passed as the `title` of `json`, `table`, `csv`, `array` or `pretty` is shown as plain text (its style
+  is lost); `rule(Text(...))` keeps it.
+
+Menus and warnings
+- `MenuState.prune` resets the selection of the level it falls back to when it drops a level (it used to clamp
+  it), so `refresh_menu` lands on the first item then.
+- A callable label or value that keeps raising logs its DEBUG record once per item and field, until the callable
+  next succeeds (it logged on every render).
+- Shortcut-conflict and `attach_logging` warnings point at the first caller outside the package, using
+  `warnings.warn(skip_file_prefixes=...)`: a `run(menu)` call is no longer attributed to `app.py`, and the
+  console script's warnings no longer point at `cli.py`.
+- Nav-bar cell widths count terminal columns (`rich.cells.cell_len`), not characters, so double-width glyphs in a
+  label no longer overflow a row.
+- `attach_logging` on an app that has exited attaches nothing: it warns (`LoggingAttachWarning`) and returns an
+  inert, already-detached `LogAttachment`.
+- A `logging` record is now a structured `log` event (logger, level number, time, exception text) and the panel
+  formats it; the line shown is the same.
+
+Secrets
+- For a job with a secret prompt value, the redaction covers everything the job writes: log, text, progress,
+  result and error text, and `json` and `table` payloads (turned into redacted plain text, so `pretty` loses its
+  Rich styling). Rich renderables written by such a job are replaced by their type name (a `Text` by its plain text). A `JobSpec` keeps the value
+  out of its `repr`.
+
+### Removed
+- `Dashboard.location` and `MenuState.move`.
+- Support for Python 3.11 and 3.12, and the pre-3.12 `stacklevel` fallback of `warn_external`.
+
+### Fixed
+- **F5:** actions ran synchronously on the UI thread, `async` actions were never awaited, there was no busy
+  state, cancel or result rendering, and a traceback was reduced to `str(exc)`. Actions are now jobs (see
+  Added), and an exception shows the full traceback.
+- **F9:** `print()` and stderr output from consumer code never reached the panel; inside a job it now lands
+  there, in order with the job's other output.
+- **C0-1** (F2/F3 follow-up): the log handler keeps `logger`, `levelno`, time and exception text instead of
+  flattening the record to a string.
+- **C0-2:** under overflow only `log` and `text` events are dropped, oldest first; `result`, `error`, `progress`,
+  `hello`, `json`, `table` and the rest are never dropped, and `progress` is coalesced per job and id.
+- **C0-3:** the inbox feeds a sink instead of the app (the seam for a headless sink in Phase 4).
+- **C0-4:** `app.panel` calls, `emit`, `push_log` and `logging` records share one first-in first-out order.
+- **C0-5:** `push_log` and the inbox never raise on the UI thread, whatever the sink does.
+- **C0-6:** the "N log record(s) dropped" notice no longer repeats on every drain during sustained overflow: at
+  most one opening and one closing line per episode.
+- **C0-7:** an `attach_logging` after the app has exited no longer leaves a handler behind (see Changed).
+- **C0-8:** a UI-thread backlog drain no longer holds up a worker thread's `logging` call (about 0.8 s before);
+  a drain is bounded to a 15 ms slice per call.
+- Thread-safe `set_menu`, `refresh_menu` and `go_home` for jobs (`ctx.set_menu` and friends); the `CLIApp`
+  methods themselves stay UI-thread only.
+- An abandoned job's output no longer reaches the terminal while Textual tears the app down: the capture is held
+  over the real streams for the whole `run()`.
+
+### Known limits
+- An abandoned job's thread cannot be killed: it runs on in the background until the process ends, with its
+  output, events and `Context` calls ignored. No `after_command` hook runs for it.
+- For a job that floods the panel, the closing `N more log record(s) dropped (UI busy)` line can appear after the
+  job's `Executed:` line.
+- `asyncio.to_thread` (or the default executor) inside an `async` job can delay process exit until that thread
+  ends. The framework's own job threads are daemons.
+- While Textual suspends the app (`action_suspend_process`), an abandoned job's output can reach the terminal.
+- `app.run_async()` (and so `run()`) is covered by the capture guard; `app.run_test()` is not.
+- A self-exit (`app.exit()` from inside a thread or async job) shows a `Stopping X` warning, and an async job
+  then ends `Cancelled:`.
+- Secret jobs: `json`, `table` and `pretty` payloads are redacted into plain text (Rich `Pretty` styling is
+  lost); a secret split across table cells or across lines is not caught; threads a secret job starts itself are
+  not redacted.
+- A `Text` title on `json`, `table`, `csv`, `array` and `pretty` loses its style.
+- Not verified: a real terminal on Windows, Python 3.14, and Textual 0.80.0 on Python 3.13 (the CI workflow has
+  not run on GitHub yet).
 
 ## [Unreleased] - Phase 1 (public API and packaging)
 

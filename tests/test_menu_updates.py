@@ -37,7 +37,7 @@ def deep_menu(calls: Calls | None = None) -> MenuItem:
 async def enter_deepest(pilot) -> None:
     for shortcut in ("t", "m", "d"):
         await type_command(pilot, shortcut)
-    assert pilot.app.query_one("#dashboard", Dashboard).location == "Home|Top|Middle|Deepest"
+    assert pilot.app.query_one("#dashboard", Dashboard).crumbs == ("Home", "Top", "Middle", "Deepest")
 
 
 # --------------------------------------------------------------------------- set_menu on a running app
@@ -52,10 +52,10 @@ async def test_set_menu_returns_to_the_new_root_with_the_first_item_selected():
         dash, nav = view(app)
         await type_command(pilot, "s")
         await pilot.press("down")
-        assert nav.selected == 1 and dash.location == "Old|Sub"
+        assert nav.selected == 1 and dash.crumbs == ("Old", "Sub")
         app.set_menu(menu(leaf("New A", "n", new.action("A")), leaf("New B", "m"), label="New"))
         await pilot.pause()
-        assert dash.location == "New" and dash.crumbs == ("New",)
+        assert dash.crumbs == ("New",)
         assert nav.selected == 0 and shown(nav) == ["New A", "New B", "Exit"]
         assert isinstance(nav.items[-1], _NavCell) and nav.items[-1].kind == "exit"
         await type_command(pilot, "o")
@@ -85,7 +85,7 @@ async def test_set_menu_accepts_a_menu_that_is_a_bare_leaf():
         app.set_menu(MenuItem("Lonely"))
         await pilot.pause()
         dash, nav = view(app)
-        assert dash.location == "Lonely" and shown(nav) == ["Exit"]
+        assert dash.crumbs == ("Lonely",) and shown(nav) == ["Exit"]
 
 
 async def test_set_menu_warns_at_the_callers_line_and_logs_each_problem_to_the_panel():
@@ -118,12 +118,12 @@ async def test_strict_mode_raises_value_error_and_keeps_the_old_menu():
             app.set_menu(bad)
         assert str(error.value) == "\n".join(find_shortcut_conflicts(bad))
         await pilot.pause()
-        assert dash.location == "Old root" and shown(nav) == ["Old", "Exit"] and panel_lines(app) == before
+        assert dash.crumbs == ("Old root",) and shown(nav) == ["Old", "Exit"] and panel_lines(app) == before
         await type_command(pilot, "o")
         assert calls.names == ["old"]
         app.set_menu(menu(leaf("Clean", "c"), label="Clean root"))  # a clean menu is still accepted
         await pilot.pause()
-        assert dash.location == "Clean root"
+        assert dash.crumbs == ("Clean root",)
 
 
 async def test_a_warning_escalated_to_an_error_leaves_the_old_menu_in_place_and_nothing_queued():
@@ -133,7 +133,7 @@ async def test_a_warning_escalated_to_an_error_leaves_the_old_menu_in_place_and_
         with pytest.raises(ShortcutConflictWarning):  # the pytest filters turn it into an exception
             app.set_menu(menu(*CONFLICTED))
         await pilot.pause()
-        assert dash.location == "Home" and shown(nav) == ["Old", "Exit"] and panel_lines(app) == []
+        assert dash.crumbs == ("Home",) and shown(nav) == ["Old", "Exit"] and panel_lines(app) == []
         with pytest.warns(ShortcutConflictWarning) as record:  # the problems were not recorded as reported
             app.set_menu(menu(*CONFLICTED))
         assert len(record) == 2
@@ -166,7 +166,7 @@ async def test_set_menu_before_the_app_starts_swaps_the_tree_and_warns_at_once_b
     assert len(record) == 2 and all(w.filename == __file__ for w in record)
     async with app.run_test(size=SIZE) as pilot:
         dash, nav = view(app)
-        assert dash.location == "Swapped" and shown(nav) == ["Quit it", "X1", "X2", "Exit"]
+        assert dash.crumbs == ("Swapped",) and shown(nav) == ["Quit it", "X1", "X2", "Exit"]
         text = flat(await read_panel(pilot))
         assert text == " ".join(find_shortcut_conflicts(menu(*CONFLICTED, label="Swapped")))
 
@@ -210,14 +210,14 @@ async def test_refresh_menu_shows_in_place_edits_and_keeps_the_stack_and_selecti
         dash, nav = view(app)
         await type_command(pilot, "s")
         await pilot.press("down", "down")
-        assert nav.selected == 2 and dash.location == "Home|Sub"
+        assert nav.selected == 2 and dash.crumbs == ("Home", "Sub")
         second.label = "Two renamed"
         second.current_value = 5
         sub.children.append(leaf("Four", "d"))
         sub.label = "Sub renamed"
         app.refresh_menu()
         await pilot.pause()
-        assert dash.location == "Home|Sub renamed" and dash.crumbs == ("Home", "Sub renamed")
+        assert dash.crumbs == ("Home", "Sub renamed")
         assert shown(nav) == ["One", "Two renamed", "Three", "Four", "Back"]
         assert nav.selected == 2
         assert "b1 Two renamed (5)" in "\n".join(nav.render().plain.splitlines())
@@ -233,11 +233,11 @@ async def test_refresh_menu_falls_back_to_the_nearest_level_that_still_exists():
         middle.children.pop()  # the Deepest level is gone from Middle
         app.refresh_menu()
         await pilot.pause()
-        assert dash.location == "Home|Top|Middle" and shown(nav) == ["Mid leaf", "Back"]
+        assert dash.crumbs == ("Home", "Top", "Middle") and shown(nav) == ["Mid leaf", "Back"]
         root.children.pop()  # now Top is gone as well
         app.refresh_menu()
         await pilot.pause()
-        assert dash.location == "Home" and shown(nav) == ["First", "Exit"] and nav.selected == 0
+        assert dash.crumbs == ("Home",) and shown(nav) == ["First", "Exit"] and nav.selected == 0
 
 
 async def test_refresh_menu_clamps_the_selection_when_items_were_removed():
@@ -290,11 +290,11 @@ async def test_strict_mode_refresh_menu_raises_before_touching_the_view():
         root.children.append(leaf("Dup", "1x"))  # ... and a duplicate shortcut appeared
         with pytest.raises(ValueError, match="1x"):
             app.refresh_menu()
-        assert dash.location == "Home|Top|Middle|Deepest"
+        assert dash.crumbs == ("Home", "Top", "Middle", "Deepest")
         root.children.pop()
         app.refresh_menu()
         await pilot.pause()
-        assert dash.location == "Home"
+        assert dash.crumbs == ("Home",)
 
 
 # --------------------------------------------------------------------------- go_home
@@ -311,12 +311,12 @@ async def test_go_home_from_three_levels_down_returns_to_the_root():
         before = panel_lines(app)
         app.go_home()
         await pilot.pause()
-        assert dash.location == "Home" and dash.crumbs == ("Home",)
+        assert dash.crumbs == ("Home",)
         assert shown(nav) == ["First", "Top", "Exit"] and nav.selected == 0
         assert nav.items[-1].kind == "exit"
         assert panel_lines(app) == before
         await type_command(pilot, "t")
-        assert dash.location == "Home|Top"
+        assert dash.crumbs == ("Home", "Top")
 
 
 async def test_go_home_at_the_root_does_nothing():
@@ -327,7 +327,7 @@ async def test_go_home_at_the_root_does_nothing():
         before = panel_lines(app)
         app.go_home()
         await pilot.pause()
-        assert dash.location == "Home" and shown(nav) == ["A", "B", "Exit"] and panel_lines(app) == before
+        assert dash.crumbs == ("Home",) and shown(nav) == ["A", "B", "Exit"] and panel_lines(app) == before
         assert app.is_running
 
 
@@ -352,15 +352,15 @@ async def test_the_menu_methods_work_while_a_prompt_dialog_is_open():
         dash, nav = view(app)
         await open_prompt(pilot)
         app.refresh_menu()
-        assert dash.location == "Home|Sub"
+        assert dash.crumbs == ("Home", "Sub")
         app.go_home()
-        assert dash.location == "Home"
+        assert dash.crumbs == ("Home",)
         app.set_menu(menu(leaf("Fresh", "f"), label="Fresh root"))
-        assert dash.location == "Fresh root" and shown(nav) == ["Fresh", "Exit"]
+        assert dash.crumbs == ("Fresh root",) and shown(nav) == ["Fresh", "Exit"]
         assert isinstance(app.screen, PromptScreen) and app.is_running
         await pilot.press("escape")
         await pilot.pause()
-        assert not isinstance(app.screen, PromptScreen) and dash.location == "Fresh root"
+        assert not isinstance(app.screen, PromptScreen) and dash.crumbs == ("Fresh root",)
         assert seen == []
 
 
@@ -387,12 +387,12 @@ async def test_the_menu_methods_can_be_called_from_a_worker_thread_through_call_
     async with app.run_test(size=SIZE) as pilot:
         dash, nav = view(app)
         await type_command(pilot, "s")
-        assert dash.location == "Home|Sub"
+        assert dash.crumbs == ("Home", "Sub")
         await asyncio.to_thread(app.call_from_thread, app.go_home)
-        assert dash.location == "Home"
+        assert dash.crumbs == ("Home",)
         await type_command(pilot, "s")
         await asyncio.to_thread(app.call_from_thread, app.set_menu, menu(leaf("Threaded", "t"), label="From thread"))
-        assert dash.location == "From thread" and shown(nav) == ["Threaded", "Exit"]
+        assert dash.crumbs == ("From thread",) and shown(nav) == ["Threaded", "Exit"]
         await asyncio.to_thread(app.call_from_thread, app.refresh_menu)
         assert app.is_running
 
@@ -405,7 +405,7 @@ async def test_the_menu_methods_work_from_a_worker_thread_while_a_prompt_is_open
         await open_prompt(pilot)
         await asyncio.to_thread(app.call_from_thread, app.refresh_menu)
         await asyncio.to_thread(app.call_from_thread, app.go_home)
-        assert dash.location == "Home" and isinstance(app.screen, PromptScreen) and app.is_running
+        assert dash.crumbs == ("Home",) and isinstance(app.screen, PromptScreen) and app.is_running
 
 
 # --------------------------------------------------------------------------- CF-4: one validation hook

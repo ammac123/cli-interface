@@ -35,7 +35,7 @@ EXAMPLE_FILES = [f"examples/{m}.py" for m in check_dist.EXAMPLE_MODULES]
 def metadata(
     version: str = VERSION or "0.0.0",
     *,
-    requires_python: str | None = ">=3.11",
+    requires_python: str | None = ">=3.13",
     rich: str | None = "rich>=13.3.3",
     textual: str | None = "textual<9,>=0.80",
 ) -> str:

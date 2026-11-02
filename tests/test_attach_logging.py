@@ -12,7 +12,7 @@ from cli_interface import LoggingAttachWarning
 from cli_interface.app import CLIApp, attach_logging
 from cli_interface.log_handler import LogAttachment, PanelInbox
 from helpers import (
-    SIZE, StubApp, leaf, menu, panel_text, run_threads, tui_handlers, wait_for,
+    SIZE, StubApp, StubSink, leaf, menu, panel_text, run_threads, tui_handlers, wait_for,
 )
 
 
@@ -177,8 +177,8 @@ def test_exclusive_on_a_named_logger_leaves_the_root_handlers_alone(unique_logge
 
 
 async def test_records_queued_in_the_inbox_still_render_after_detach(unique_logger):
-    app = StubApp()
-    inbox = PanelInbox(app)
+    app, sink = StubApp(), StubSink()
+    inbox = PanelInbox(sink)
     app.push_log = inbox.put  # type: ignore[method-assign]
     inbox.open(asyncio.get_running_loop())
     lg = unique_logger("queued")
@@ -187,8 +187,8 @@ async def test_records_queued_in_the_inbox_still_render_after_detach(unique_logg
     t.start()
     t.join(timeout=5)  # loop blocked: records are queued, not yet written
     attachment.detach()
-    await wait_for(lambda: len(app.panel.out) == 5)
-    assert [m.rsplit(": ", 1)[1] for m in app.panel.messages] == [f"q{i}" for i in range(5)]
+    await wait_for(lambda: len(sink.out) == 5)
+    assert [m.rsplit(": ", 1)[1] for m in sink.messages] == [f"q{i}" for i in range(5)]
 
 
 # --------------------------------------------------------------------------- the lease (unit)

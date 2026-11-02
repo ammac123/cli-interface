@@ -161,14 +161,15 @@ def test_select_by_shortcut_ignores_whitespace_on_both_sides():
 
 # --------------------------------------------------------------------------- CF-2: one source for reserved commands
 
-def test_reserved_actions_maps_each_command_to_one_of_four_actions():
+def test_reserved_actions_maps_each_command_to_one_of_five_actions():
     assert dict(RESERVED_ACTIONS) == {
         "q": "quit", "quit": "quit", "exit": "quit",
         "b": "back", "back": "back",
         "clear": "clear",
         "help": "help", "?": "help",
+        "stop": "stop",
     }
-    assert set(RESERVED_ACTIONS.values()) == {"quit", "back", "clear", "help"}
+    assert set(RESERVED_ACTIONS.values()) == {"quit", "back", "clear", "help", "stop"}
 
 
 def test_reserved_commands_is_derived_from_reserved_actions():
@@ -334,3 +335,137 @@ def test_prune_clamps_to_the_last_child_not_to_zero():
     top.children.pop()
     state.prune()
     assert state.selected_index == 1
+
+
+# --------------------------------------------------------------------------- Phase 2: C1-4 prune resets, C1-3 once-only DEBUG, C1-6
+
+def test_prune_resets_the_surviving_levels_selection_when_it_dropped_a_level():
+    root, top, mid, deep = nested()
+    state = MenuState(root)
+    descend(state, 1, 1)
+    assert state.current_menu is mid
+    top.children.remove(mid)
+    assert state.prune() is True
+    assert state.current_menu is top and state.selected_index == 0, "reset, not clamped to the old position"
+
+
+def test_prune_after_dropping_several_levels_resets_only_the_new_top_and_keeps_the_ones_above():
+    root, top, mid, deep = nested()
+    state = MenuState(root)
+    descend(state, 1, 1, 1)
+    mid.children.remove(deep)
+    assert state.prune() is True and state.current_menu is mid and state.selected_index == 0
+    assert state.back() and state.current_menu is top and state.selected_index == 1
+    assert state.back() and state.current_menu is root and state.selected_index == 1
+
+
+def test_prune_dropping_down_to_the_root_resets_the_root_selection():
+    root, top, *_ = nested()
+    state = MenuState(root)
+    descend(state, 1)
+    state.back()
+    state.selected_index = 1
+    descend(state, 1)
+    root.children.remove(top)
+    assert state.prune() is True and state.current_menu is root and state.selected_index == 0
+
+
+def test_prune_without_dropping_a_level_still_clamps_instead_of_resetting():
+    root, top, *_ = nested()
+    state = MenuState(root)
+    descend(state, 1)
+    state.selected_index = 2
+    top.children.pop()
+    assert state.prune() is False and state.selected_index == 1
+
+
+def test_menu_state_has_no_dead_move_method_any_more():
+    assert not hasattr(MenuState, "move")
+
+
+def debug_records(caplog, text):
+    return [r for r in caplog.records if r.name == "cli_interface.menu" and text in r.getMessage()]
+
+
+def test_a_raising_label_logs_one_debug_record_until_it_next_succeeds(caplog):
+    state = {"fail": True}
+
+    def label():
+        if state["fail"]:
+            raise RuntimeError("label boom")
+        return "fine"
+
+    item = MenuItem(label)
+    with caplog.at_level(logging.DEBUG, logger="cli_interface.menu"):
+        assert [item_label(item) for _ in range(5)] == ["<error>"] * 5
+        assert len(debug_records(caplog, "label raised")) == 1
+        state["fail"] = False
+        assert item_label(item) == "fine"
+        state["fail"] = True
+        assert [item_label(item) for _ in range(3)] == ["<error>"] * 3
+        assert len(debug_records(caplog, "label raised")) == 2, "a success re-arms the log"
+    assert debug_records(caplog, "label raised")[0].exc_info is not None
+
+
+def test_a_raising_value_logs_one_debug_record_until_it_next_succeeds(caplog):
+    state = {"fail": True}
+
+    def value():
+        if state["fail"]:
+            raise RuntimeError("value boom")
+        return 3
+
+    item = MenuItem("X", current_value=value)
+    with caplog.at_level(logging.DEBUG, logger="cli_interface.menu"):
+        assert [item_value(item) for _ in range(4)] == ["<error>"] * 4
+        assert len(debug_records(caplog, "current_value raised")) == 1
+        state["fail"] = False
+        assert item_value(item) == 3
+        state["fail"] = True
+        item_value(item)
+        assert len(debug_records(caplog, "current_value raised")) == 2
+
+
+def test_the_label_and_value_of_one_item_and_different_items_log_independently(caplog):
+    def bad():
+        raise ValueError("bad")
+
+    a, b = MenuItem(bad, current_value=bad), MenuItem(bad)
+    with caplog.at_level(logging.DEBUG, logger="cli_interface.menu"):
+        for _ in range(3):
+            item_label(a), item_value(a), item_label(b)
+    assert len(debug_records(caplog, "label raised")) == 2
+    assert len(debug_records(caplog, "current_value raised")) == 1
+
+
+def test_a_label_whose_str_raises_is_deduplicated_too(caplog):
+    class Odd:
+        def __str__(self) -> str:
+            raise RuntimeError("no str")
+
+    item = MenuItem(lambda: Odd())
+    with caplog.at_level(logging.DEBUG, logger="cli_interface.menu"):
+        for _ in range(4):
+            assert item_label(item) == "<error>"
+    assert len(debug_records(caplog, "label raised")) == 1
+
+
+def test_the_once_only_flag_does_not_leak_into_equality_repr_or_the_fields():
+    import dataclasses
+
+    def bad():
+        raise ValueError("bad")
+
+    first, twin = MenuItem(bad, shortcut="x"), MenuItem(bad, shortcut="x")
+    item_label(first)
+    assert first == twin and repr(first) == repr(twin)
+    assert [f.name for f in dataclasses.fields(first)] == [f.name for f in dataclasses.fields(twin)]
+    assert first.is_leaf
+
+
+def test_a_base_exception_from_a_label_still_propagates():
+    def stop():
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        item_label(MenuItem(stop))

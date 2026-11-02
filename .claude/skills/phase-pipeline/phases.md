@@ -148,6 +148,8 @@ None of this is throwaway, because the Phase 2 runner builds on it.
 
 ### Phase 2: job runner and `Context` (the keystone)
 
+**Status: done** (2026-11-03). Branch `phase-2`, from `23a8ed1`; local commit, not pushed. The pipeline record is in `.claude/pipeline/phase-2*.md`, and the ledger is `phase-2.md`. 1,742 tests pass on Python 3.13 with Textual 8.2.8 and with Textual 0.80.0 / Rich 13.3.3. The same phase also dropped Python 3.11 and 3.12 support (`requires-python>=3.13`, the user's decision on 2026-11-03). Cost: about 3.4M reported subagent tokens and about 14 h, so later phases follow the "Lean mode" section of SKILL.md.
+
 | Item | Effort |
 |---|---|
 | Event schema v1, with `DisplayPanel` as a thread-safe sink | M |
@@ -303,3 +305,23 @@ The reproduction scripts in `probes/` were copied from the review's scratchpad. 
 | `api/` | API probes; `sigproto.py` is a prototype of the signature-to-form schema (Phase 3) |
 
 The full agent reports are in the session transcript at `~/.claude/projects/-Users-andrewmacleod-workspace-cli-interface/3ebbbff1-44e5-4ddc-af74-a25109ab5199.jsonl`, which is subject to transcript cleanup.
+
+## Carried forward from Phase 2
+
+Sources: `.claude/pipeline/phase-2-review-1.md`, `-review-2.md`, `-review-3-classification.md`, `phase-2-test-1.md` §4 and the plan §6 (decisions U1–U14).
+
+**Phase 3**
+- `capture_loggers=` appears in the consumer sketch but was not built (`attach_logging` covers it).
+- A job that calls `app.exit()` on itself shows a cosmetic "Stopping X" WARNING, and an async job ends "Cancelled:". Fix: pass a "quit requested by this job" flag into `begin_quit`.
+- `PanelInbox._deliver` counts sink exceptions in `write_errors` but never logs them.
+- `Text` titles on `json`/`table`/`array`/`pretty`/`csv` lose their style (those events have no `obj` slot).
+- Secret redaction: still no shared redaction set for forms and `app.settings(secret=...)`; a secret split across table cells or lines is not caught; threads a secret job spawns are not redacted.
+- `App.command` takes no parameter schema yet (Phase 3 `Param`).
+- Possible simplification: the abandon-after-grace policy (daemon threads, capture refs, outer guard, `reinstall`) produced most of the edge cases this phase. A hard-exit policy would remove them, at the cost of skipping a stuck job's own cleanup. **User decision** if it keeps causing bugs.
+
+**Phase 4**
+- `events.dumps` can emit `NaN`/`Infinity`, which is invalid strict JSON. Fix before the wire protocol.
+- While Textual suspends the app (`action_suspend_process`), an abandoned job's output can reach the terminal.
+- F7 (no non-TTY path) and the `run` verb decision are still open (see Phase 1 carry-forward).
+
+**Decisions the planner defaulted, to raise with the user** (plan §6; all provisional and reversible): U1 context-free sync `MenuItem` actions run inline on the UI thread; U2 `App` subclasses `CLIApp` and `__all__` has 13 names; U3 own daemon threads instead of `asyncio.to_thread`; U4 a second run while busy is rejected, `quit_grace` 2.0 s, second `stop` abandons; U5 `stop` is reserved; U6 return-value rendering changes; U7 tracebacks always shown; U8 drop-notice rule; U9 capture routing; U10 spinner per job; U11 `Context` has no `app`, `ask` or `require`; U12 `app.jobs.wait_idle` is the public test hook; U13 `attach_logging` after exit warns and returns an inert handle.
