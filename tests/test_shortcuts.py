@@ -7,9 +7,10 @@ import pytest
 from rich.text import Text
 from textual.widgets import Input
 
+from cli_interface import ShortcutConflictWarning
 from cli_interface.app import CLIApp
-from cli_interface.menu import RESERVED_COMMANDS, MenuItem, MenuState, find_shortcut_conflicts
-from cli_interface.theme import _BACK, _EXIT, _HINT_TEXT, _YELLOW
+from cli_interface.menu import RESERVED_COMMANDS, MenuItem, MenuState, _NavCell, find_shortcut_conflicts
+from cli_interface.theme import _HINT_TEXT, _YELLOW
 from cli_interface.widgets import Dashboard, NavBar
 from helpers import (
     SIZE, Calls, build_demo_app, color_of, leaf, line_segments, menu, panel_lines, panel_text, quiet_app, read_panel,
@@ -79,7 +80,7 @@ CONFLICTED = (leaf("Quit it", "q"), leaf("X1", "x"), leaf("X2", "X"))
 
 
 def test_conflicts_raise_one_user_warning_per_problem_pointing_at_the_caller():
-    with pytest.warns(UserWarning) as record:
+    with pytest.warns(ShortcutConflictWarning) as record:
         CLIApp(menu(*CONFLICTED))
     messages = [str(w.message) for w in record]
     assert len(messages) == 2
@@ -323,7 +324,7 @@ def test_hint_text_has_the_new_wording_within_its_width_budget():
     first, second = Text.from_markup(_HINT_TEXT).plain.split("\n")
     assert "type a shortcut + Enter" in first
     assert "or command" not in first and "type a shortcut or command" not in _HINT_TEXT
-    assert len(first) == 82 and len(second) <= 85
+    assert len(first) == 72 and len(second) <= 85
 
 
 async def test_the_hint_widget_shows_the_new_wording(make_app):
@@ -339,8 +340,8 @@ async def test_help_table_has_the_exact_new_rows_and_dropped_the_old_ones(make_a
     async with app.run_test(size=SIZE) as pilot:
         await type_command(pilot, "help")
         lines = panel_lines(app)
-        shortcut_row = next(l for l in lines if "<shortcut> + Enter" in l)
-        number_row = next(l for l in lines if "<number> + Enter" in l)
+        shortcut_row = next(ln for ln in lines if "<shortcut> + Enter" in ln)
+        number_row = next(ln for ln in lines if "<number> + Enter" in ln)
         assert "Activate item by its shortcut (shown in yellow)" in shortcut_row
         assert "Activate item by position" in number_row
         text = "\n".join(lines)
@@ -384,7 +385,11 @@ async def enter_by_displayed_shortcut(pilot, labels: tuple[str, ...]) -> None:
 
 
 def is_sentinel(item: MenuItem) -> bool:
-    return item.description in (_BACK, _EXIT)
+    return isinstance(item, _NavCell)
+
+
+def nav_kind(item: MenuItem) -> str | None:
+    return item.kind if isinstance(item, _NavCell) else None
 
 
 @pytest.mark.parametrize("path, size, i", CELLS)
@@ -398,7 +403,7 @@ async def test_every_displayed_shortcut_activates_its_item(path, size, i):
         nav = app.query_one("#nav-bar", NavBar)
         here = "|".join(["Home", *path])
         assert dash.location == here and len(nav.items) == size
-        assert is_sentinel(nav.items[-1]) and (nav.items[-1].description == _EXIT) is (not path)
+        assert is_sentinel(nav.items[-1]) and (nav_kind(nav.items[-1]) == "exit") is (not path)
         item = nav.items[i]
         shortcut = displayed_shortcut(nav, i)
         if item.label == "Plain":
@@ -406,10 +411,10 @@ async def test_every_displayed_shortcut_activates_its_item(path, size, i):
             return
         assert shortcut, f"{item.label!r} displays no shortcut"
         await type_command(pilot, shortcut)
-        if item.description == _EXIT:
+        if nav_kind(item) == "exit":
             await wait_for(lambda: app.return_code is not None, what="the app to exit")
             assert app.return_code == 0
-        elif item.description == _BACK:
+        elif nav_kind(item) == "back":
             assert dash.location == "|".join(["Home", *path[:-1]])
         elif item.children:
             assert dash.location == f"{here}|{item.label}"
@@ -451,13 +456,13 @@ async def test_demo_walk_using_only_the_shortcuts_the_nav_bar_displays():
         await enter_by_displayed_shortcut(pilot, ("Settings", "Audio"))
         assert dash.location == "Home|Settings|Audio"
         back = displayed_shortcut(nav, len(nav.items) - 1)
-        assert nav.items[-1].description == _BACK and back
+        assert nav_kind(nav.items[-1]) == "back" and back
         await type_command(pilot, back)
         assert dash.location == "Home|Settings"
         await type_command(pilot, displayed_shortcut(nav, len(nav.items) - 1))
         assert dash.location == "Home"
         exit_shortcut = displayed_shortcut(nav, len(nav.items) - 1)
-        assert nav.items[-1].description == _EXIT and exit_shortcut
+        assert nav_kind(nav.items[-1]) == "exit" and exit_shortcut
         await type_command(pilot, exit_shortcut)
         await wait_for(lambda: app.return_code is not None, what="the app to exit")
         assert app.return_code == 0

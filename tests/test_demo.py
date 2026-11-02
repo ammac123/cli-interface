@@ -1,4 +1,4 @@
-"""The demo menu, its scoped worker capture, and main.py."""
+"""The demo menu (examples/), its scoped worker capture, and examples.main."""
 from __future__ import annotations
 
 import json
@@ -11,12 +11,13 @@ from pathlib import Path
 import pytest
 from textual.widgets import Input
 
-from cli_interface.app import attach_logging
-from cli_interface.example_menu import build_example_menu
-from cli_interface.menu import MenuItem, find_shortcut_conflicts
+from cli_interface import CLIApp, LoggingAttachWarning, MenuItem, attach_logging, find_shortcut_conflicts
 from cli_interface.widgets import Dashboard, PromptScreen
+from examples.example_menu import build_menu
+from cli_interface.menu import item_label
+from cli_interface.widgets import NavBar
 from helpers import (
-    SIZE, build_demo_app, panel_lines, panel_text, read_panel, tui_handlers, wait_for,
+    SIZE, build_demo_app, panel_lines, panel_text, read_panel, tui_handlers, type_command, wait_for, widget_text,
 )
 
 REPO = Path(__file__).resolve().parent.parent
@@ -34,14 +35,12 @@ def walk(item: MenuItem):
 
 # --------------------------------------------------------------------------- the menu itself
 
-@pytest.mark.parametrize("with_app", [True, False])
-def test_demo_menu_has_no_shortcut_conflicts(with_app):
-    demo = build_example_menu(lambda: None, (lambda: None) if with_app else None)
-    assert find_shortcut_conflicts(demo) == []
+def test_demo_menu_has_no_shortcut_conflicts():
+    assert find_shortcut_conflicts(build_menu(CLIApp(MenuItem("Home")))) == []
 
 
 def test_demo_menu_offers_a_secret_token_prompt_under_settings():
-    demo = build_example_menu(lambda: None, lambda: None)
+    demo = build_menu(CLIApp(MenuItem("Home")))
     token = next(i for i in walk(demo) if i.label == "Set Token")
     assert (token.shortcut, token.secret, token.prompt) == ("k", True, "Enter API token:")
     settings = next(i for i in demo.children if i.label == "Settings")
@@ -56,35 +55,36 @@ def test_building_the_demo_app_emits_no_warnings():
         build_demo_app()
 
 
-# --------------------------------------------------------------------------- main.py
+# --------------------------------------------------------------------------- examples.main
 
 IMPORT_PROBE = """
 import json, logging, sys
 root = logging.getLogger()
 before = ([type(h).__name__ for h in root.handlers], root.level)
 sys.path.insert(0, {repo!r})
-import main
+import examples.main as m
 after = ([type(h).__name__ for h in root.handlers], root.level)
-print(json.dumps({{"before": before, "after": after, "run": main.run.__module__ + "." + main.run.__name__}}))
+print(json.dumps({{"before": before, "after": after, "main": m.main.__module__ + "." + m.main.__name__}}))
 """
 
 
-def test_importing_main_in_a_fresh_interpreter_configures_no_logging():
+def test_importing_examples_main_in_a_fresh_interpreter_configures_no_logging():
     out = subprocess.run(
         [sys.executable, "-c", IMPORT_PROBE.format(repo=str(REPO))],
         capture_output=True, text=True, timeout=60, check=True,
     ).stdout
     result = json.loads(out.strip().splitlines()[-1])
     assert result["after"] == result["before"] == [[], logging.WARNING]
-    assert result["run"] == "cli_interface.app.run"
+    assert result["main"] == "examples.main.main"
 
 
-def test_executing_main_as_a_module_does_not_start_the_app_or_touch_root(root_logger_guard):
+def test_executing_examples_main_as_a_module_does_not_start_the_app_or_touch_root(root_logger_guard, monkeypatch):
     import runpy
 
+    monkeypatch.delitem(sys.modules, "examples.main", raising=False)  # an earlier import would make runpy warn
     before = (list(root_logger_guard.handlers), root_logger_guard.level)
-    namespace = runpy.run_path(str(REPO / "main.py"), run_name="not_main")
-    assert callable(namespace["run"])
+    namespace = runpy.run_module("examples.main", run_name="not_main")
+    assert callable(namespace["main"])
     assert (list(root_logger_guard.handlers), root_logger_guard.level) == before
 
 
@@ -237,7 +237,7 @@ async def test_worker_demo_against_a_host_attached_root_keeps_the_hosts_capture(
     async with app.run_test(size=SIZE) as pilot:
         host = attach_logging(app)
         level_before = host_root.level
-        with pytest.warns(UserWarning, match="ignored"):
+        with pytest.warns(LoggingAttachWarning, match="ignored"):
             await pilot.press("w", "enter")
             await wait_for(gated_worker.started.is_set)
             await pilot.pause()
@@ -323,3 +323,140 @@ async def test_demo_walkthrough_with_the_smoke_test_expectations_updated(fast_wo
         await wait_for(lambda: app.return_code is not None)
     assert not tui_handlers(host_root)
     assert app.return_code in (0, None)
+
+
+# --------------------------------------------------------------------------- CF-11: Settings actions reach the panel
+
+DEMO_LOGGER = "examples.example_menu"
+
+
+def demo_logger_is_clean() -> bool:
+    """Level restored, no TUI handler left, still not propagating (pytest adds its own handlers to such loggers)."""
+    lg = logging.getLogger(DEMO_LOGGER)
+    return lg.level == logging.NOTSET and not tui_handlers(lg) and lg.propagate is False
+
+
+async def open_audio(pilot) -> None:
+    await type_command(pilot, "s")
+    await type_command(pilot, "a")
+
+
+def count(text: str, needle: str) -> int:
+    return flat(text).count(needle)
+
+
+async def test_a_settings_action_logs_once_before_its_executed_line_and_leaves_no_handler_behind():
+    app = build_demo_app()
+    async with app.run_test(size=SIZE) as pilot:
+        await open_audio(pilot)
+        await type_command(pilot, "1")
+        text = flat(panel_text(app))
+        assert text.count("Volume set to 25%") == 1
+        assert text.index("Volume set to 25%") < text.index("Executed: Volume Low")
+        assert demo_logger_is_clean()
+        await type_command(pilot, "3")
+        text = flat(panel_text(app))
+        assert text.count("Volume set to 100%") == 1 and text.count("Volume set to 25%") == 1
+    assert demo_logger_is_clean()
+
+
+async def test_toggle_debug_logs_each_change_once_and_its_value_follows_in_the_nav_bar():
+    app = build_demo_app()
+    async with app.run_test(size=SIZE) as pilot:
+        await type_command(pilot, "s")
+        nav = app.query_one("#nav-bar", NavBar)
+        assert "d Toggle Debug (off)" in widget_text(nav)
+        await type_command(pilot, "d")
+        assert "d Toggle Debug (on)" in widget_text(nav)
+        assert count(panel_text(app), "Debug mode toggled on") == 1
+        await type_command(pilot, "d")
+        assert "d Toggle Debug (off)" in widget_text(nav)
+        assert count(panel_text(app), "Debug mode toggled off") == 1 and count(panel_text(app), "toggled on") == 1
+
+
+async def test_set_port_updates_the_nav_bar_value_and_an_invalid_port_changes_nothing():
+    app = build_demo_app()
+    async with app.run_test(size=SIZE) as pilot:
+        await type_command(pilot, "s")
+        nav = app.query_one("#nav-bar", NavBar)
+        assert "p Set Port (8080)" in widget_text(nav)
+        await type_command(pilot, "p")
+        await pilot.press("x", "enter")
+        await pilot.pause()
+        text = flat(panel_text(app))
+        assert text.count("Invalid port 'x'") == 1 and "p Set Port (8080)" in widget_text(nav)
+        await type_command(pilot, "p")
+        await pilot.press("9", "0", "9", "0", "enter")
+        await pilot.pause()
+        text = flat(panel_text(app))
+        assert text.count("Port set to 9090") == 1 and "Executed: Set Port → port → 9090" in text
+        assert "p Set Port (9090)" in widget_text(nav)
+        assert demo_logger_is_clean()
+
+
+async def test_reset_all_restores_the_defaults_and_goes_back_to_the_home_menu():
+    app = build_demo_app()
+    async with app.run_test(size=SIZE) as pilot:
+        dash = app.query_one("#dashboard", Dashboard)
+        await type_command(pilot, "s")
+        await type_command(pilot, "d")
+        await type_command(pilot, "p")
+        await pilot.press("7", "0", "7", "0", "enter")
+        await pilot.pause()
+        assert dash.location == "Home|Settings"
+        await type_command(pilot, "x")
+        assert dash.location == "Home"
+        assert count(panel_text(app), "All settings reset to defaults") == 1
+        await type_command(pilot, "s")
+        shown = widget_text(app.query_one("#nav-bar", NavBar))
+        assert "Toggle Debug (off)" in shown and "Set Port (8080)" in shown
+
+
+async def test_settings_records_appear_once_even_while_the_worker_demos_exclusive_root_capture_is_active(
+    gated_worker, host_root
+):
+    app = build_demo_app()
+    async with app.run_test(size=SIZE) as pilot:
+        await type_command(pilot, "w")
+        await wait_for(gated_worker.started.is_set, what="worker to start")
+        await pilot.pause()
+        assert len(tui_handlers(host_root)) == 1
+        await open_audio(pilot)
+        await type_command(pilot, "2")
+        await type_command(pilot, "b")
+        await type_command(pilot, "d")
+        text = panel_text(app)
+        assert count(text, "Volume set to 50%") == 1 and count(text, "Debug mode toggled on") == 1
+        assert count(text, "Worker starting") == 1
+        assert demo_logger_is_clean()
+        gated_worker.release.set()
+        await wait_for(lambda: not tui_handlers(host_root), what="capture to be released")
+        await gated_worker.threads.settle()
+        assert count(panel_text(app), "Worker finished") == 1
+
+
+# --------------------------------------------------------------------------- the demo dogfoods callable labels and values
+
+def test_the_demo_menu_uses_a_callable_label_and_callable_values():
+    demo = build_menu(CLIApp(MenuItem("Home")))
+    worker = next(i for i in demo.children if i.shortcut == "w")
+    settings = next(i for i in demo.children if i.label == "Settings")
+    values = {item_label(i): i.current_value for i in settings.children if i.current_value is not None}
+    assert callable(worker.label) and item_label(worker) == "Worker Demo"
+    assert callable(values["Toggle Debug"]) and callable(values["Set Port"])
+
+
+async def test_the_worker_demo_label_shows_running_while_it_runs_but_the_executed_line_does_not(gated_worker, host_root):
+    app = build_demo_app()
+    async with app.run_test(size=SIZE) as pilot:
+        nav = app.query_one("#nav-bar", NavBar)
+        assert "w Worker Demo " in widget_text(nav) and "(running)" not in widget_text(nav)
+        await type_command(pilot, "w")
+        await wait_for(gated_worker.started.is_set, what="worker to start")
+        await pilot.pause()
+        assert "w Worker Demo (running)" in widget_text(nav)
+        text = flat(panel_text(app))
+        assert "Executed: Worker Demo" in text and "Executed: Worker Demo (running)" not in text
+        gated_worker.release.set()
+        await wait_for(lambda: "(running)" not in widget_text(nav), what="the label to go idle again")
+        await gated_worker.threads.settle()

@@ -3,7 +3,8 @@ from __future__ import annotations
 import itertools
 import logging
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -115,7 +116,7 @@ class GatedWorker:
         self.threads = ThreadWatch()
 
     def __call__(self) -> None:
-        from cli_interface import example_worker
+        from examples import example_worker
 
         self.runs += 1
         self.started.set()
@@ -128,7 +129,7 @@ class GatedWorker:
 @pytest.fixture
 def gated_worker(monkeypatch: pytest.MonkeyPatch):
     """Replace the demo worker with a deterministic, gated one; always release and join its thread afterwards."""
-    from cli_interface import example_worker
+    from examples import example_worker
 
     gate = GatedWorker()
     monkeypatch.setattr(example_worker, "run", gate)
@@ -140,7 +141,7 @@ def gated_worker(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 def fast_worker(monkeypatch: pytest.MonkeyPatch):
     """The real demo worker, shortened to a few quick steps. Yields a ThreadWatch for its thread."""
-    from cli_interface import example_worker
+    from examples import example_worker
 
     original = example_worker.run
     watch = ThreadWatch()

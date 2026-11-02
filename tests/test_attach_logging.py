@@ -8,6 +8,7 @@ import warnings
 
 import pytest
 
+from cli_interface import LoggingAttachWarning
 from cli_interface.app import CLIApp, attach_logging
 from cli_interface.log_handler import LogAttachment, PanelInbox
 from helpers import (
@@ -237,10 +238,10 @@ def test_owner_detach_makes_every_lease_inactive_and_restores_the_logger(unique_
     base = LogAttachment(StubApp(), lg, exclusive=True, level=logging.DEBUG)
     leases = [base.share() for _ in range(3)]
     base.detach()
-    assert not any(l.active for l in leases)
+    assert not any(lease.active for lease in leases)
     assert lg.handlers == before and lg.level == logging.WARNING
-    for l in leases:
-        l.detach()
+    for lease in leases:
+        lease.detach()
     assert lg.handlers == before
 
 
@@ -259,8 +260,8 @@ def test_concurrent_lease_detaches_leave_the_owner_active(unique_logger):
     lg = unique_logger()
     base = LogAttachment(StubApp(), lg)
     leases = [base.share() for _ in range(8)]
-    run_threads(*[(lambda l=l: [l.detach() for _ in range(3)]) for l in leases])
-    assert base.active and base.handler in lg.handlers and not any(l.active for l in leases)
+    run_threads(*[(lambda lease=lease: [lease.detach() for _ in range(3)]) for lease in leases])
+    assert base.active and base.handler in lg.handlers and not any(lease.active for lease in leases)
     base.detach()
 
 
@@ -305,7 +306,7 @@ async def test_repeat_attach_with_ignored_arguments_warns_once_and_changes_nothi
     app = make_app(leaf("A", "a"))
     async with app.run_test(size=SIZE):
         first = attach_logging(app, lg)
-        with pytest.warns(UserWarning, match="ignored") as record:
+        with pytest.warns(LoggingAttachWarning, match="were ignored because") as record:
             lease = attach_logging(app, lg, **kwargs)
         assert len(record) == 1 and record[0].filename == __file__
         assert lease.handler is first.handler
@@ -317,7 +318,7 @@ async def test_host_attach_then_scoped_attach_keeps_the_host_capturing(make_app,
     app = make_app(leaf("A", "a"))
     async with app.run_test(size=SIZE) as pilot:
         host = attach_logging(app)
-        with pytest.warns(UserWarning, match="ignored") as record:
+        with pytest.warns(LoggingAttachWarning, match="were ignored because") as record:
             scoped = attach_logging(app, exclusive=True, level=logging.DEBUG)
         assert len(record) == 1
         assert scoped is not host and scoped.handler is host.handler
@@ -366,7 +367,7 @@ async def test_lease_detach_from_threads_leaves_the_host_capturing(make_app, uni
     async with app.run_test(size=SIZE) as pilot:
         host = attach_logging(app, lg)
         leases = [attach_logging(app, lg) for _ in range(8)]
-        run_threads(*[(lambda l=l: [l.detach() for _ in range(50)]) for l in leases])
+        run_threads(*[(lambda lease=lease: [lease.detach() for _ in range(50)]) for lease in leases])
         assert host.active
         lg.warning("still captured")
         await pilot.pause()
@@ -394,7 +395,7 @@ async def test_exit_with_outstanding_leases_restores_root(make_app, host_root):
     app = make_app(leaf("A", "a"))
     async with app.run_test(size=SIZE):
         owner = attach_logging(app, exclusive=True, level=logging.DEBUG)
-        with pytest.warns(UserWarning):
+        with pytest.warns(LoggingAttachWarning):
             lease = attach_logging(app, level=logging.INFO)
         outstanding = attach_logging(app)
     assert not owner.active and not lease.active and not outstanding.active

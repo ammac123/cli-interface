@@ -112,7 +112,7 @@ async def test_records_from_a_background_thread_respect_max_lines(make_app):
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         run_threads(lambda: [app.push_log(f"r{i}") for i in range(200)])
-        await wait_for(lambda: any(l == "r199" for l in panel_lines(app)))
+        await wait_for(lambda: any(ln == "r199" for ln in panel_lines(app)))
         assert len(richlog(app).lines) <= 50
 
 

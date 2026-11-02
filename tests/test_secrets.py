@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 from textual.widgets import Input
@@ -73,8 +74,8 @@ async def test_plain_prompted_item_does_not_echo_the_typed_value(make_app):
         await type_into_prompt(pilot, "8080")
         lines = panel_lines(app)
         assert calls.log == [("port", ("8080",))]
-        assert [l for l in lines if "Executed" in l] == ["Executed: Set Port"]
-        assert not any("8080" in l for l in lines)
+        assert [ln for ln in lines if "Executed" in ln] == ["Executed: Set Port"]
+        assert not any("8080" in ln for ln in lines)
 
 
 async def test_plain_prompted_result_is_shown_but_not_the_value(make_app):
@@ -107,8 +108,8 @@ async def test_secret_value_never_appears_in_any_panel_line_and_has_no_result_su
         await pilot.pause()
         await type_into_prompt(pilot, SECRET)
         lines = panel_lines(app)
-        assert not any(SECRET in l for l in lines)
-        executed = [l for l in lines if "Executed" in l]
+        assert not any(SECRET in ln for ln in lines)
+        executed = [ln for ln in lines if "Executed" in ln]
         assert len(executed) == 1 and executed[0].endswith("Executed: Set Tok")
         assert "→" not in executed[0]
 
@@ -163,7 +164,7 @@ async def test_empty_secret_value_leaves_the_error_text_untouched(make_app):
         await pilot.press("enter")  # submit nothing
         await pilot.pause()
         lines = panel_lines(app)
-        assert [l for l in lines if "Error in" in l] == ["Error in Tok: token required"]
+        assert [ln for ln in lines if "Error in" in ln] == ["Error in Tok: token required"]
         assert app.is_running
 
 
@@ -264,7 +265,7 @@ def test_secret_item_without_a_value_has_the_stock_repr():
 
 def test_secret_value_is_masked_in_repr_str_and_format():
     item = MenuItem("Token", prompt="p", current_value="SECRET123", secret=True)
-    for rendered in (repr(item), str(item), f"{item!r}", f"{item}", "%r" % (item,)):
+    for rendered in (repr(item), str(item), f"{item!r}", f"{item}", "%r" % (item,)):  # noqa: UP031  (%-formatting is the case under test)
         assert "SECRET123" not in rendered
     assert "current_value='***'" in repr(item) and "secret=True" in repr(item)
     assert item.current_value == "SECRET123", "masking must not change the stored value"

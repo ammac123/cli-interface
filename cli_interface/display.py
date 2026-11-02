@@ -56,9 +56,9 @@ class DisplayPanel:
     and only after the app has mounted. From any other thread use
     ``CLIApp.push_log``, or ``attach_logging`` for the ``logging`` module.
 
-    The scrollback is bounded by ``CLIApp(max_lines=...)`` (default 5000 lines):
-    when it is exceeded the oldest lines are discarded, for content such as large
-    tables or JSON as well as for log lines.
+    The scrollback is bounded by ``CLIApp(max_lines=...)`` (default 5000 lines,
+    ``None`` for no limit): when it is exceeded the oldest lines are discarded, for
+    content such as large tables or JSON as well as for log lines.
 
     Scrolling: the panel follows the end of the output. The content methods
     (``json``, ``table``, ``csv``, ``array``, ``pretty``) switch that off and
@@ -222,7 +222,7 @@ class DisplayPanel:
         if not rows:
             return
         headers, *data = rows
-        self.table([dict(zip(headers, row)) for row in data], headers=headers, title=title)
+        self.table([dict(zip(headers, row, strict=False)) for row in data], headers=headers, title=title)
 
     def array(self, items: list, title: str = "") -> None:
         """Pretty-print a list with Rich's ``Pretty``. ``title`` is literal. Content method."""

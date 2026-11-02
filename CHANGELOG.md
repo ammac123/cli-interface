@@ -2,7 +2,160 @@
 
 All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). There is no tagged release yet; the work
-is grouped by roadmap phase. Baseline for Phase 0 is commit `fdb8069`.
+is grouped by roadmap phase. Baseline for Phase 0 is commit `fdb8069`; for Phase 1 it is `4cab69a`.
+
+## [Unreleased] - Phase 1 (public API and packaging)
+
+### Changed (behaviour)
+
+Breaking for code written against Phase 0
+- **`run()` requires a menu.** `run(menu, *, strict_shortcuts=False, max_lines=5000) -> int`. With no argument it
+  used to launch the bundled demo and now raises `TypeError`. It forwards both options to `CLIApp` (it took
+  neither) and returns the app's exit code, or 0 when the app set none (it returned `None`).
+- **A bare `cli-interface` exits 2** ("the following arguments are required: target"). It used to launch the
+  demo menu. The console script is now `cli_interface.cli:main` (was `cli_interface.app:run`); see Added.
+- **The demos moved to `examples/`.** `cli_interface.example_menu`, `cli_interface.example_worker` and the root
+  `main.py` are gone. Run the demo with `python -m examples.main` from a checkout, or
+  `cli-interface examples.example_menu:build_menu` from the repository root. `build_example_menu(get_panel,
+  get_app=None)` is now `build_menu(app)` and needs the app. `examples/` is in the sdist, not in the wheel.
+- **`theme._BACK` and `theme._EXIT` are removed.** The Exit and Back cells are private `_NavCell` instances. An
+  item with `description="__exit__"` or `"__back__"` used to quit or go back; it is now an ordinary item and
+  runs its action. Detect the cells with `isinstance`, never by comparing fields.
+- **`start_spinner()` and `stop_spinner()` do nothing before the app has started and after it has exited.**
+  They used to raise Textual errors.
+- **`requires-python` is now `>=3.11`** (was `>=3.13`). The declared dependencies are `rich>=13.3.3` (it was not
+  declared) and `textual>=0.80,<9` (the ceiling is new).
+- `CLIApp(menu)` raises `TypeError` if `menu` is not a `MenuItem`.
+- **`max_lines` is validated**: `None` keeps every line, any other value must be a positive `int`; `0`, a negative
+  number, `True`, a string or a float raise `ValueError` (before, none of these were validated or supported).
+
+Menu labels and values
+- `MenuItem.label` and `MenuItem.current_value` may be no-argument callables. They run on the UI thread, once per
+  item for each repaint of the nav bar, and (label only) each time the breadcrumb, an `Executed:` or `Error in`
+  line, a prompt title or a shortcut-conflict message is built. The result goes through `str()`; `None` as a
+  value shows nothing; an `Exception` shows `<error>` and logs the traceback at DEBUG on `cli_interface.menu`.
+  A callable value is never called for a `secret` item (it shows `••••`).
+- The label in the `Executed: ...` and `Error in ...` lines is read before the action runs, so a toggle labelled
+  `"Turn off" if on else "Turn on"` logs the label of the item you chose.
+- The nav bar already repaints after every action and navigation. Changes made elsewhere need
+  `refresh_menu()` (see Added).
+
+Shortcuts and commands
+- **Shortcuts are compared with surrounding whitespace stripped**, in matching, display, width and conflict
+  detection. `" x "` now matches a typed `x` (it was displayed but never matched), a whitespace-only shortcut
+  means no shortcut, and `" q "` is reported as reserved. The nav bar shows the stripped text.
+- Shortcut conflicts are checked on `set_menu` and `refresh_menu` as well as on `CLIApp(menu)`. They are
+  emitted as `ShortcutConflictWarning`, and the "were ignored" warning from `attach_logging` as
+  `LoggingAttachWarning`. Both subclass `UserWarning`, so existing `UserWarning` filters still match; the
+  message text is unchanged.
+- The key hint no longer shows `q` on the first line. It reads "type a shortcut + Enter" on line 1 and
+  "q + Enter  quit   PgUp / PgDn  scroll output   Home / End  top / bottom" on line 2 ("jump to" is dropped),
+  and both lines fit an 80-column terminal. The help table's `q`/`quit`/`exit`, `b`/`back`, `clear` and
+  `help` rows now say `+ Enter`.
+
+Demo
+- The Settings items now log into the panel (they used to log into nothing): each action attaches the demo logger
+  for the length of the call, so each message appears once, also while the Worker Demo captures the root
+  logger. Toggle Debug logs `Debug mode toggled on` or `off`, and Reset All ends at the root menu.
+
+Dev only
+- pytest's `filterwarnings` select the package's warnings by category (`error::cli_interface.ShortcutConflictWarning`
+  and `...LoggingAttachWarning`) instead of by message text.
+
+### Added
+- **A public facade.** `from cli_interface import ...` exposes exactly `CLIApp`, `DisplayPanel`, `LogAttachment`,
+  `LoggingAttachWarning`, `MenuItem`, `RESERVED_COMMANDS`, `ShortcutConflictWarning`, `__version__`,
+  `attach_logging`, `find_shortcut_conflicts` and `run`. `LogAttachment` is exported as a return type only;
+  `PanelInbox`, `TUILogHandler` and `MenuState` stay internal. Imports from `cli_interface.app`, `.menu`,
+  `.display` and `.log_handler` still work.
+  The package ships `py.typed`, and `__version__` (0.1.0) is read from `cli_interface/_version.py`.
+- `CLIApp.set_menu(menu)`, `CLIApp.refresh_menu()` and `CLIApp.go_home()`. UI thread only (from another thread
+  use `app.call_from_thread`); legal before the app starts, after it has exited and with a prompt open; the
+  output panel is never touched except for WARNING lines about shortcut conflicts. `set_menu` goes back to the
+  root with the first item selected, and if its check raises (strict mode, or a warning turned into an error)
+  the old menu stays. `refresh_menu` keeps the current level and selection, and falls back to the nearest level
+  that still exists. `go_home` does nothing at the root.
+- `ShortcutConflictWarning` and `LoggingAttachWarning` (both `UserWarning`).
+- **The `cli-interface module:attr` console script.** `attr` (dotted names allowed) is a `MenuItem` or a callable
+  returning one; a callable with a required positional parameter is called with the `CLIApp`, so its actions can
+  use `app.panel`. The current directory is put first on `sys.path`. Flags: `--strict-shortcuts`,
+  `--max-lines N`, `--version`, `-h`. Exit 0 (or the app's code); 2 for a usage problem (missing or malformed
+  target, module or attribute not found, wrong type, bad `--max-lines`, a conflict under `--strict-shortcuts`);
+  1 with a traceback for an exception raised inside your own code.
+- `Dashboard.crumbs`, the breadcrumb as a tuple of labels. `Dashboard.location` (joined with `|`) is kept.
+- `examples/`: `main.py` (`python -m examples.main`), `example_menu.py` (`build_menu(app)`) and
+  `example_worker.py`. The demo uses only the public API, a callable label and callable values.
+- Packaging: dynamic version, an explicit sdist include list (`cli_interface/`, `examples/`, `README.md`,
+  `LICENSE`, `CHANGELOG.md`; hatch adds `PKG-INFO`, `pyproject.toml` and `.gitignore`), and a wheel with the
+  package only. `scripts/check_dist.py` (standard library only) fails on anything outside the allowlist, a
+  missing member, wrong metadata or a version mismatch; run it after `uv build`.
+- Tooling: ruff (`E4,E7,E9,F,UP,B`) and mypy configuration, and the dependency groups `test` (pytest,
+  pytest-asyncio), `lint` (ruff, mypy) and `dev` (both; `uv sync` installs it). `cli_interface/`, `examples/` and
+  `scripts/` are clean under both tools and `tests/` under ruff (this fixed 10 style findings in the package, 22 in
+  `tests/` and the two mypy errors in `app.py`). `uv.lock` is regenerated for the new dependencies (Textual 8.2.8,
+  Rich 15.0.0, ruff 0.17.3, mypy 2.4.1).
+- CI (`.github/workflows/ci.yml`): `lint`; `test` on Ubuntu, macOS and Windows with Python 3.11 to 3.14 (locked
+  versions) plus Ubuntu 3.11 and 3.14 with the lowest direct dependencies (Textual 0.80.0, Rich 13.3.3), each
+  leg smoke-testing the console script; and `build` (sdist and wheel, `check_dist.py`, a clean-venv install).
+- Dev only (not shipped): 885 tests (was 467 and one xfail), including the new facade, lifecycle, menu update,
+  console script, packaging and `check_dist.py` suites; the tests that used the bundled demo now build it from
+  `examples/`. They pass on Python 3.11 with Textual 0.80.0 and Rich 13.3.3 (lowest direct versions), on 3.12
+  and 3.13 with Textual 8.2.8, and on 3.14 with both.
+- Docs: the README is rewritten for the facade, dynamic menus, the console script, the examples and the
+  limitations; the public API and the touched internals have docstrings.
+
+### Removed
+- The no-argument `run()` and the built-in demo behind it, `cli_interface.example_menu`,
+  `cli_interface.example_worker`, the root `main.py` and `build_example_menu`.
+- `theme._BACK` and `theme._EXIT`.
+- The Python 3.13 floor, the Pilot caveat (call `app.exit()` before leaving `run_test` while a spinner runs) and
+  the strict xfail test that covered it.
+
+### Fixed
+- **Timers after shutdown.** A spinner or phrase timer tick that landed after the app had shut down (or while a
+  prompt was open) could fail against the torn-down screens. All three timers are now kept and stopped on
+  unmount, and the tick callbacks do nothing when the app is not running. `on_mount` is idempotent, so a
+  subclass may call `super().on_mount()`.
+- **Nav-bar width.** A shortcut was counted as 2 columns whatever its length, so a long shortcut could make a row
+  overflow. The width now follows the shortcut's length.
+- **Reserved words in one place.** Typed commands dispatch through a single table (`RESERVED_ACTIONS`), and
+  `RESERVED_COMMANDS` is derived from it, so the two cannot drift apart.
+- The prompt dialog's `Enter` / `Esc` hint was invisible (zero height); it now shows.
+- A menu label containing `|` was split into several breadcrumb crumbs.
+- The key hint and help table did not say `+ Enter` for `q`, `b`, `clear` and `help`.
+- If the app crashed, Textual's traceback printed local variables, which could include the typed secret of a
+  prompted action. It is now printed without them (this overrides a private Textual hook, `_fatal_error`).
+- Activating a submenu from a stale view (the menu was edited after the nav bar was drawn) no longer enters
+  whatever item is selected now; the view is resynced instead.
+
+### Notes
+- **Callable timing.** A callable label or value is evaluated at paint time, not when the item is created, and
+  once per paint. Keep them cheap and free of side effects; a callable that keeps raising logs a DEBUG record
+  each time.
+- **`ImportError` and the exit code.** `cli-interface` exits 2 (no traceback) only when the target module, or a
+  parent package of it, cannot be found. Any other error while importing it, an `ImportError` inside your module
+  included, is your code's error: it exits 1 with the traceback.
+- **Warnings through `run(menu)`** are attributed to `app.py` instead of your call, on every Python version (the
+  code uses a fixed `stacklevel`; `warnings.warn(skip_file_prefixes=...)` needs Python 3.12, and a fix is
+  planned). Through the console script they point at `cli.py`. `CLIApp(menu)`, `set_menu` and `refresh_menu`
+  point at your call.
+- **Provisional decisions (they may change before the first release).**
+  - `run(menu)` takes a required `menu` and a bare `cli-interface` exits 2.
+  - The console-script target contract: `module:attr`, a callable with a required positional parameter receives
+    the `CLIApp`, the current directory goes on `sys.path`.
+  - The version stays 0.1.0 (it is not bumped for this phase).
+  - The public surface is the 11 names above; two warning categories rather than one; render-time callables with
+    the `<error>` fallback; surrounding whitespace in shortcuts is stripped, not rejected; `max_lines=None` means
+    unbounded.
+  - `rich>=13.3.3` rather than `rich>=13`, because Textual 0.80.0 itself requires `rich>=13.3.3`, so a lower floor
+    could not be exercised; and the `textual<9` ceiling.
+  - `examples/` ships in the sdist but not in the wheel.
+  - The package has no `license` metadata, authors or URLs yet, and `hatchling` is not pinned in `[build-system]`.
+- **Known gaps.** There is still no non-TTY run path (`cli-interface pkg:menu` with no terminal hangs or prints
+  escape codes; only `--help` and `--version` are TTY-free). The CI workflow has not run on GitHub yet and the
+  suite was run locally on macOS only, so the Windows and macOS-runner legs are unverified. `set_menu`,
+  `refresh_menu` and `go_home` are UI-thread only and are not yet thread-safe proxies. After `refresh_menu`
+  drops a level, the selection is clamped rather than reset.
 
 ## [Unreleased] - Phase 0 (hardening)
 

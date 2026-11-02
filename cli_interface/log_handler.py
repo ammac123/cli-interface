@@ -40,7 +40,7 @@ class PanelInbox:
     panel is already writing one (a re-entrant log call) is discarded.
     """
 
-    def __init__(self, app: "CLIApp", maxlen: int | None = None) -> None:
+    def __init__(self, app: CLIApp, maxlen: int | None = None) -> None:
         """``app`` must expose ``panel.log(message, level)``. ``maxlen=None`` uses the module default."""
         self._app = app
         self._maxlen = maxlen
@@ -178,7 +178,7 @@ class TUILogHandler(logging.Handler):
     ``emit`` does nothing.
     """
 
-    def __init__(self, app: "CLIApp") -> None:
+    def __init__(self, app: CLIApp) -> None:
         super().__init__()
         self._app = app
         self._detached = False
@@ -194,6 +194,7 @@ class TUILogHandler(logging.Handler):
         self._detached = True
 
     def emit(self, record: logging.LogRecord) -> None:
+        """Format ``record`` and queue it for the panel with ``app.push_log``. Does nothing once detached."""
         if self._detached:
             return
         try:
@@ -215,15 +216,17 @@ class LogAttachment:
     ``logger`` and ``handler`` expose what was attached. ``detach()`` is
     idempotent, thread-safe and removes only this attachment's handler.
 
-    Constructing a ``LogAttachment`` directly attaches immediately but bypasses
-    the app's bookkeeping: no de-duplication, no automatic detach when the app
-    exits, and no restoring of handlers removed by ``exclusive=True`` unless you
-    call ``detach()`` yourself. Prefer ``attach_logging``.
+    Create one only through ``attach_logging``. Constructing a ``LogAttachment``
+    directly is discouraged, not blocked: it attaches immediately but bypasses the app's
+    bookkeeping (no de-duplication, no automatic detach when the app exits), so
+    calling ``detach()`` is then your job (it still restores what ``exclusive=True``
+    removed). The class is exported from ``cli_interface`` only so it can be used in
+    type annotations.
     """
 
     def __init__(
         self,
-        app: "CLIApp",
+        app: CLIApp,
         logger: logging.Logger | None = None,
         *,
         exclusive: bool = False,
@@ -291,7 +294,7 @@ class LogAttachment:
             if self._level_changed and logger.level == self._set_level:
                 logger.setLevel(self._prev_level)
 
-    def share(self) -> "LogAttachment":
+    def share(self) -> LogAttachment:
         """
         Return a lease on this attachment: a handle that shares the same handler.
 
@@ -301,7 +304,7 @@ class LogAttachment:
         """
         return _Lease(self)
 
-    def __enter__(self) -> "LogAttachment":
+    def __enter__(self) -> LogAttachment:
         return self
 
     def __exit__(self, *exc: object) -> None:

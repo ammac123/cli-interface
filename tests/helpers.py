@@ -5,7 +5,8 @@ import logging
 import threading
 import time
 import warnings
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from rich.text import Text
 from textual.geometry import Region
@@ -19,7 +20,7 @@ from cli_interface.menu import MenuItem
 SIZE = (140, 40)
 
 # The hostile-string matrix from the plan and the review.
-HOSTILE = ["[/x]", "matrix[i][j]", "C:\\data\\[/tmp]", "x\\[y", "[bold]x[/bold]", "[", "]["]
+HOSTILE = ["[/x]", "matrix[i][j]", "C:\\data\\[/tmp]", "x\\[y", "[bold]x[/bold]", "[", "][", "a|b"]
 
 
 def leaf(label: str, shortcut: str = "", action: Callable[..., Any] | None = None, **kw: Any) -> MenuItem:
@@ -167,14 +168,21 @@ def quiet_app(*items: MenuItem, **kwargs: Any) -> CLIApp:
         return CLIApp(menu(*items), **kwargs)
 
 
-def build_demo_app(**kwargs: Any) -> CLIApp:
-    """The demo menu wired the same way cli_interface.app.run() does."""
-    from cli_interface.example_menu import build_example_menu
+async def type_command(pilot: Any, text: str) -> None:
+    """Put `text` in the command input and press Enter, like a user typing a command."""
+    from textual.widgets import Input
 
-    ref: list[CLIApp] = []
-    demo_menu = build_example_menu(get_panel=lambda: ref[0].panel, get_app=lambda: ref[0])
-    app = CLIApp(demo_menu, **kwargs)
-    ref.append(app)
+    pilot.app.query_one("#command-input", Input).value = text
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+def build_demo_app(**kwargs: Any) -> CLIApp:
+    """The demo menu wired the way examples.main does it."""
+    from examples.example_menu import build_menu
+
+    app = CLIApp(MenuItem("Home"), **kwargs)
+    app.set_menu(build_menu(app))
     return app
 
 

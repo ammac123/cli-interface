@@ -4,6 +4,7 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import logging
+import typing
 
 import pytest
 from textual.app import App
@@ -85,7 +86,17 @@ def test_push_log_and_panel_surface_is_unchanged():
     assert list(params(CLIApp.push_log))[1:] == ["message", "level"]
     assert params(CLIApp.push_log)["level"].default == "INFO"
     assert isinstance(CLIApp.panel, property)
-    assert list(params(run)) == ["menu"] and params(run)["menu"].default is None
+
+
+def test_run_requires_a_menu_and_takes_the_cliapp_options_by_keyword():
+    p = params(run)
+    assert list(p) == ["menu", "strict_shortcuts", "max_lines"]
+    assert p["menu"].default is inspect.Parameter.empty
+    assert p["strict_shortcuts"].kind is inspect.Parameter.KEYWORD_ONLY and p["strict_shortcuts"].default is False
+    assert p["max_lines"].kind is inspect.Parameter.KEYWORD_ONLY and p["max_lines"].default == 5000
+    assert typing.get_type_hints(run)["return"] is int
+    with pytest.raises(TypeError):
+        run()  # type: ignore[call-arg]
 
 
 def test_removed_names_stay_removed():
@@ -266,14 +277,6 @@ async def test_quitting_through_exit_with_a_spinner_running_leaves_run_test_clea
     assert app.return_code == 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "harness-only teardown race, pre-existing (code unchanged since fdb8069): run_test shuts down without "
-        "exit(), so Timer._tick does not skip the callback and it finds the screens pruned; a real quit goes "
-        "through exit(). The guard is deferred to the Phase 1 timer lifecycle, ruling E."
-    ),
-)
 async def test_late_timer_ticks_after_teardown_are_harmless(make_app):
     app = make_app(leaf("A", "a"))
     async with app.run_test(size=SIZE) as pilot:

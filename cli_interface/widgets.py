@@ -9,10 +9,10 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, Static
 
-from .menu import MenuItem
+from .menu import MenuItem, _NavCell, item_label, item_value
 from .phrases import get_phrase
 from .theme import (
-    _BACK, _BG, _CYAN, _DIM_FG, _EXIT,
+    _BG, _CYAN, _DIM_FG,
     _FG, _ORANGE, _PANEL, _SPINNER_FRAMES, _SURFACE, _YELLOW,
 )
 
@@ -67,7 +67,7 @@ class PromptScreen(ModalScreen[str | None]):
     }}
 
     #prompt-hint {{
-        height: 1;
+        height: 2;
         color: {_DIM_FG};
         padding: 1 0 0 0;
     }}
@@ -111,18 +111,20 @@ class Dashboard(Static):
     """
     Top bar showing navigation breadcrumb, idle phrase, and optional spinner.
 
-    ``location`` is the breadcrumb as labels joined with ``"|"``, so a menu label
-    that itself contains ``"|"`` is displayed as separate crumbs.
+    ``crumbs`` is the breadcrumb as a tuple of labels. While it is ``None``,
+    ``location`` (labels joined with ``"|"``) is split instead, so a label that
+    itself contains ``"|"`` is displayed as separate crumbs.
     """
 
     location      = reactive("Home")
+    crumbs: reactive[tuple[str, ...] | None] = reactive(None)
     status        = reactive(get_phrase("idle"))
     spinning      = reactive(False)
     spinner_frame = reactive(0)
     spinner_label = reactive("")
 
     def render(self) -> Text:
-        crumbs = self.location.split("|")
+        crumbs = self.crumbs if self.crumbs is not None else self.location.split("|")
         sep    = Text(" › ", style=_DIM_FG)
         path   = sep.join(Text(c, style=f"bold {_ORANGE}") for c in crumbs)
         if self.spinning:
@@ -142,10 +144,17 @@ class Dashboard(Static):
 # NavBar
 # ---------------------------------------------------------------------------
 
-def _value_text(item: MenuItem) -> str:
-    if item.secret and item.current_value is not None:
-        return "••••"
-    return f"{item.current_value}"
+def _value_text(item: MenuItem) -> str | None:
+    """The text shown for ``current_value``, or None for no value. A secret item is masked without calling anything."""
+    if item.secret:
+        return "••••" if item.current_value is not None else None
+    value = item_value(item)
+    if value is None:
+        return None
+    try:
+        return str(value)
+    except Exception:
+        return "<error>"
 
 
 class NavBar(Static):
@@ -157,10 +166,18 @@ class NavBar(Static):
     item) and a ``›`` marker on submenus. The Exit (``q``) and Back (``b``) cells
     are appended by the app. Everything is drawn literally. Two rows fit per page;
     the rest are reached with the arrow keys.
+
+    A callable label or value is evaluated once per item per render pass (see ``_snap``);
+    a secret item's value is masked without calling it.
     """
 
     items:    reactive[list[MenuItem]] = reactive(list, layout=True)
     selected: reactive[int]            = reactive(0)
+
+    # Label/value text per item (keyed by id) for the render pass in progress, None outside one.
+    # Each label and value callable then runs once per pass, so the width used to lay the rows out
+    # and the text drawn cannot disagree. render() saves and restores it, so a nested render is safe.
+    _snap: dict[int, tuple[str, str | None]] | None = None
 
     def watch_items(self, _: list[MenuItem]) -> None:
         self.refresh(layout=True)
@@ -171,18 +188,24 @@ class NavBar(Static):
     # ------------------------------------------------------------------
     # Layout helpers
 
-    def _compute_item_width(self, item: MenuItem) -> int:
-        """
-        Estimate visible character width of a rendered item cell.
+    def _resolve(self, item: MenuItem) -> tuple[str, str | None]:
+        """The item's label text and value text (None = no value); once per render pass while rendering."""
+        snap = self._snap
+        if snap is None:
+            return item_label(item), _value_text(item)
+        key = id(item)
+        if key not in snap:
+            snap[key] = (item_label(item), _value_text(item))
+        return snap[key]
 
-        The shortcut is counted as 2 columns, which is exact only for a one-character
-        shortcut: longer shortcuts are under-estimated, so a row can overflow.
-        """
-        sc        = 2 if item.shortcut else 0
-        val       = len(f" ({_value_text(item)})") if item.current_value is not None else 0
-        is_sent   = item.description in (_BACK, _EXIT)
-        arrow     = 2 if (not item.is_leaf and not is_sent) else 0
-        return 4 + sc + len(item.label) + val + arrow   # 4 = leading + trailing padding
+    def _compute_item_width(self, item: MenuItem) -> int:
+        """Visible character width of an unselected item cell (a selected cell is two columns narrower)."""
+        label, value = self._resolve(item)
+        shortcut  = item.shortcut.strip()
+        sc        = len(shortcut) + 1 if shortcut else 0
+        val       = len(f" ({value})") if value is not None else 0
+        arrow     = 2 if (not item.is_leaf and not isinstance(item, _NavCell)) else 0
+        return 4 + sc + len(label) + val + arrow   # 4 = leading + trailing padding
 
     def _layout_rows(self, width: int) -> list[list[int]]:
         """Pack item indices into rows, starting a new row when the current one is full."""
@@ -208,16 +231,18 @@ class NavBar(Static):
     # Item rendering
 
     def _render_item(self, i: int, item: MenuItem) -> Text:
-        is_sent = item.description in (_BACK, _EXIT)
+        is_sent = isinstance(item, _NavCell)
+        label_text, value = self._resolve(item)
+        shortcut = item.shortcut.strip()
 
         sc = Text()
-        if item.shortcut:
-            sc.append(item.shortcut, style=_YELLOW)
+        if shortcut:
+            sc.append(shortcut, style=_YELLOW)
             sc.append(" ")
-        label = Text(item.label)
-        if item.current_value is not None:
+        label = Text(label_text)
+        if value is not None:
             label.append(" ")
-            label.append(f"({_value_text(item)})", style=_DIM_FG)
+            label.append(f"({value})", style=_DIM_FG)
         arrow = Text()
         if not item.is_leaf and not is_sent:
             arrow.append(" ")
@@ -254,6 +279,14 @@ class NavBar(Static):
         if not self.items:
             return Text("  (no options)", style=_DIM_FG)
 
+        prev = self._snap
+        self._snap = {}
+        try:
+            return self._render_page()
+        finally:
+            self._snap = prev
+
+    def _render_page(self) -> Text:
         width = self.size.width if self.size.width > 0 else 80
         rows  = self._layout_rows(width)
         if not rows:

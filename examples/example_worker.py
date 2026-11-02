@@ -1,3 +1,4 @@
+"""A simulated background worker for the Worker Demo: ``run()`` reports only through ``logging``."""
 from __future__ import annotations
 
 import logging

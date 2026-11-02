@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install lint tools
+        run: uv sync --locked --no-default-groups --group lint
+      - name: ruff
+        run: uv run --no-sync ruff check cli_interface examples scripts tests
+      - name: mypy
+        run: uv run --no-sync mypy cli_interface examples scripts
+
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }}, ${{ matrix.resolution }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        resolution: [locked]
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+            resolution: lowest-direct
+          - os: ubuntu-latest
+            python: "3.14"
+            resolution: lowest-direct
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - name: Install (locked)
+        if: matrix.resolution == 'locked'
+        run: uv sync --locked --no-default-groups --group test
+      - name: Install (lowest-direct)
+        if: matrix.resolution == 'lowest-direct'
+        run: uv sync --resolution lowest-direct --no-default-groups --group test
+      - name: Assert the textual floor was exercised
+        if: matrix.resolution == 'lowest-direct'
+        shell: bash
+        run: |
+          uv run --no-sync python -c "import importlib.metadata as m; v = m.version('textual'); assert v == '0.80.0', v; print('textual', v, 'rich', m.version('rich'))"
+      - name: pytest
+        run: uv run --no-sync pytest -q
+      - name: Console-script smoke
+        shell: bash
+        run: |
+          uv run --no-sync cli-interface --version </dev/null
+          uv run --no-sync cli-interface --help </dev/null
+          status=0
+          uv run --no-sync cli-interface no-such-target </dev/null || status=$?
+          if [ "$status" -ne 2 ]; then
+            echo "expected exit 2 for a bad target, got $status"
+            exit 1
+          fi
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Build sdist, then wheel from the sdist
+        run: uv build --out-dir dist
+      - name: Check the archives against the allowlist
+        run: uv run --no-project python scripts/check_dist.py dist/*.tar.gz dist/*.whl
+      - name: Install the wheel into a clean venv
+        run: |
+          venv="$RUNNER_TEMP/wheel-venv"
+          uv venv "$venv" --python 3.11
+          uv pip install --python "$venv/bin/python" dist/*.whl
+          "$venv/bin/cli-interface" --version </dev/null
+          "$venv/bin/cli-interface" --help </dev/null
+          "$venv/bin/python" -c "import importlib.resources as r; assert r.files('cli_interface').joinpath('py.typed').is_file()"
+          cd "$RUNNER_TEMP"
+          if "$venv/bin/python" -c "import examples" 2>/dev/null; then
+            echo "examples must not be installed by the wheel"
+            exit 1
+          fi

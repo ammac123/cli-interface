@@ -9,6 +9,7 @@ import time
 import pytest
 
 import cli_interface.log_handler as log_handler
+from cli_interface import ShortcutConflictWarning
 from cli_interface.app import CLIApp, attach_logging
 from cli_interface.log_handler import LogAttachment, PanelInbox
 from helpers import (
@@ -364,7 +365,7 @@ async def test_records_logged_before_mount_are_shown_after_mount_in_order(make_a
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
         lines = panel_lines(app)
-        assert [l for l in lines if l.startswith("pre-")] == ["pre-ui", "pre-bg"]
+        assert [ln for ln in lines if ln.startswith("pre-")] == ["pre-ui", "pre-bg"]
 
 
 async def test_logger_attached_before_the_app_runs_buffers_until_mount(make_app, unique_logger, handle_errors):
@@ -421,7 +422,7 @@ async def test_subclass_on_mount_calling_super_shows_each_record_and_warning_onc
 
     Sub.pre_super = pre_super
     conflicted = menu(leaf("Quit it", "q"), leaf("Other", "o"))
-    with pytest.warns(UserWarning, match="reserved command"):
+    with pytest.warns(ShortcutConflictWarning, match="reserved command"):
         app = Sub(conflicted)
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause()
@@ -456,8 +457,8 @@ async def test_real_app_overflow_is_bounded_with_one_notice_before_the_survivors
         assert not t.is_alive()
         await wait_for(lambda: "rec-499" in panel_text(app))
         lines = panel_lines(app)
-        recs = [l for l in lines if "rec-" in l]
-        notices = [l for l in lines if "dropped" in l]
+        recs = [ln for ln in lines if "rec-" in ln]
+        notices = [ln for ln in lines if "dropped" in ln]
         assert len(recs) == 50
         assert len(notices) == 1 and "450 log record(s) dropped (UI busy)" in notices[0]
         assert lines.index(notices[0]) + 1 == lines.index(recs[0])

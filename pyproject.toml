@@ -1,25 +1,43 @@
 [project]
 name = "cli-interface"
-version = "0.1.0"
+dynamic = ["version"]
 description = "TUI frontend for project settings navigation"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
-    "textual>=0.80.0",
+    "rich>=13.3.3",
+    "textual>=0.80,<9",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
 ]
 
 [project.scripts]
-cli-interface = "cli_interface.app:run"
+cli-interface = "cli_interface.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "cli_interface/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cli_interface"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["cli_interface", "examples", "README.md", "LICENSE", "CHANGELOG.md"]
+exclude = ["**/__pycache__", "**/*.py[cod]"]
+
 [dependency-groups]
-dev = [
-    "pytest>=9.2.0",
-    "pytest-asyncio>=1.4.1",
-]
+test = ["pytest>=9.2.0", "pytest-asyncio>=1.4.1"]
+lint = ["ruff>=0.17", "mypy>=2.4"]
+dev = [{ include-group = "test" }, { include-group = "lint" }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -29,7 +47,23 @@ asyncio_default_fixture_loop_scope = "function"
 faulthandler_timeout = 60
 markers = ["allow_tui_handler_leak: this test intentionally leaves a TUILogHandler on the root logger"]
 filterwarnings = [
-    # the package's own UserWarnings (shortcut conflicts, ignored attach arguments) fail a test unless it expects them
-    'error:.*(reserved command and will never reach|only the first is reachable|were ignored because):UserWarning',
+    # the package's own warning categories fail a test unless it expects them
+    "error::cli_interface.ShortcutConflictWarning",
+    "error::cli_interface.LoggingAttachWarning",
     "error::pytest.PytestUnhandledThreadExceptionWarning",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+strict_equality = true
