@@ -449,3 +449,43 @@ async def test_an_error_on_one_colliding_field_shows_under_that_field():
         assert screen._errors["a.b"].display
         assert not screen._errors["a_b"].display
         assert host.results == []
+
+
+# --------------------------------------------------------------------------- short terminals
+
+MANY = [spec(f"f{i}", "text") for i in range(10)] + [spec("flag", "bool")]
+
+
+@pytest.mark.parametrize("rows", [20, 24, 30, 40])
+async def test_form_buttons_stay_on_screen_in_short_terminals(rows):
+    host, _ = form(*MANY)
+    async with host.run_test(size=(120, rows)) as pilot:
+        await pilot.pause()
+        screen = host.screen
+        dialog = screen.query_one(".dialog")
+        assert screen.region.contains_region(dialog.region)
+        for button in ("#form-submit", "#form-cancel"):
+            assert dialog.region.contains_region(screen.query_one(button).region)
+            assert screen.query_one(button).region.bottom <= rows
+        fields = screen.query_one("#form-fields")
+        last = field(host, "flag")
+        last.focus()
+        await wait_for(lambda: fields.region.contains_region(last.region), what="the last field to scroll into view")
+
+
+async def test_small_form_keeps_its_natural_height():
+    host, _ = form(spec("a"), spec("b"))
+    async with host.run_test(size=(120, 60)) as pilot:
+        await pilot.pause()
+        fields = host.screen.query_one("#form-fields")
+        assert fields.region.height == fields.virtual_size.height
+
+
+@pytest.mark.parametrize("rows", [12, 20, 24])
+async def test_confirm_dialog_fits_in_short_terminals(rows):
+    host = Host(ConfirmScreen("Sure?", "word " * 80))
+    async with host.run_test(size=(120, rows)) as pilot:
+        await pilot.pause()
+        screen = host.screen
+        assert screen.region.contains_region(screen.query_one(".dialog").region)
+        assert screen.query_one("#confirm-yes").region.bottom <= rows

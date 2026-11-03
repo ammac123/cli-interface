@@ -183,7 +183,7 @@ class FormScreen(ModalScreen[dict[str, Any] | None]):
 
     #form-fields {{
         height: auto;
-        max-height: 24;
+        max-height: 45vh;
     }}
 
     .form-field {{
