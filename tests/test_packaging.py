@@ -192,7 +192,7 @@ def test_mypy_is_configured_for_the_project_python():
 
 def test_the_dependency_groups_separate_test_lint_and_dev():
     groups = PYPROJECT["dependency-groups"]
-    assert {Requirement(r).name for r in groups["test"]} == {"pytest", "pytest-asyncio"}
+    assert {Requirement(r).name for r in groups["test"]} == {"pytest", "pytest-asyncio", "pydantic"}
     assert {Requirement(r).name for r in groups["lint"]} == {"ruff", "mypy"}
     assert {"include-group": "test"} in groups["dev"] and {"include-group": "lint"} in groups["dev"]
 

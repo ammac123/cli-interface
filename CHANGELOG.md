@@ -3,7 +3,106 @@
 All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). There is no tagged release yet; the work
 is grouped by roadmap phase. Baseline for Phase 0 is commit `fdb8069`; for Phase 1 it is `4cab69a`; for
-Phase 2 it is `23a8ed1`.
+Phase 2 it is `23a8ed1`; for Phase 3 it is `646c781`.
+
+## [Unreleased] - Phase 3 (parameters and settings)
+
+### Added
+- **Parameter forms.** A command asks for its arguments in a form before it runs. `@app.command(path, ...,
+  params=None, confirm=False)` and `app.add_command(path, fn, ..., params=None, confirm=False)` build the fields
+  from the signature: `str`, `int`, `float`, `bool`, `pathlib.Path`, `Enum`, `Literal[...]`, `list[...]`, optionally
+  `X | None` or `Optional[X]`, and `Annotated[T, Param(...)]` or `Annotated[T, Secret()]`. The `Context` parameter
+  is never a field. `Param(label=, help=, choices=, secret=, validate=, min=, max=)` refines a field. `choices` is
+  an iterable of values or `(value, label)` pairs, or a callable that takes a `FormContext` (its `state` is the
+  app's shared state) and is resolved each time the form opens. `Secret()` is `Param(secret=True)`.
+- **Field widgets and validation.** Text, int, float, path and list fields are inputs (a list is comma-separated);
+  `bool` is a switch; `Enum`, `Literal` and `choices=` are a select; a list with `choices` is a multi-select.
+  A secret field is a password input and is never prefilled. Submit checks every field: all errors show inline at
+  once, focus moves to the first bad field and the form stays open. An empty optional field gives `None`; an empty
+  required one says "Required". `int` rejects non-numbers, `float` rejects nan and inf, `min` and `max` apply, and a
+  `validate` that raises `ValueError` shows its message. Esc or Cancel runs nothing.
+- **Delivery.** Values arrive as keyword arguments. `params=<dataclass class>` passes one instance to the
+  function's single non-Context parameter. `params=<argparse.ArgumentParser>` passes an `argparse.Namespace`; the
+  parser's `type=`, `choices`, `nargs` of `+` or `*`, and the store, store_true and store_false actions are mapped,
+  and any other action or `nargs` value raises `ValueError` at registration.
+- **`confirm=`.** `True` asks "Run <label>?", and a string is shown as given. The yes/no dialog opens after the
+  form. Cancel, Esc and `n` run nothing, and the focus starts on Cancel, so a stray Enter cancels.
+- **`App.settings(path, model, *, save=None, secret=(), reset=True, key="")`** edits a dataclass instance or a
+  pydantic v2 `BaseModel` instance (duck-typed: pydantic is never imported). Each field is an item that shows its
+  live value, a nested model is a submenu, and "Reset to defaults" asks first and resets every field that has a
+  default, nested ones in place. A function returning the model (taking nothing or a `FormContext`) is called each
+  time the submenu opens; if it raises, `Settings unavailable: <msg>` is logged and the submenu does not open. An
+  edit or reset is a job, so it is refused while another job runs. It changes the model in place and then calls
+  `save(ctx)` (or `save()`) on the job thread. If `save` raises, the change is rolled back and the job ends in
+  `Error in`. `save=None` keeps the change in memory. Pydantic `SecretStr` fields are secret, and `Param` metadata
+  (in `Annotated` or `json_schema_extra`) and field descriptions are used. A class, a frozen dataclass or any other
+  object raises `TypeError`.
+- **Shared secret redaction (C2-2).** `CLIApp.add_secret(value)`, `add_secret_source(fn)` and `secret_values()`
+  manage one redaction set for the session. The values of masked form fields and of the `secret=` fields of
+  `app.settings` join it. `TUILogHandler` redacts log records as well, so records from loggers attached with
+  `attach_logging` or `capture_loggers` are covered. A job spec's `repr` leaves out its kwargs and secrets.
+- **`capture_loggers=` and `capture_level=` on `App` (C2-3).** Named loggers (or `Logger` objects) are attached to
+  the output panel when the app mounts, at `capture_level` if given (checked up front), and detached on exit. A
+  second mount does not attach them twice.
+- **Public API: 15 names.** `from cli_interface import ...` adds `Param` and `Secret` to the 13 of Phase 2.
+  `FormScreen`, `ConfirmScreen`, `ParamSpec` and `FormContext` stay internal. New modules: `params` (the schema, the
+  derivation from signature, dataclass and argparse, and the conversion; stdlib only), `settings` (introspection of
+  models; stdlib only) and `settings_menu` (the tree behind `App.settings`).
+- **pydantic is a test dependency only.** `pydantic>=2.12` is in the `test` dependency group, where the tests use it
+  through `importorskip`. It is not a runtime dependency, and `import cli_interface` works without it.
+- Dev only (not shipped): 2,007 tests (was 1,742), in `tests/test_params.py`, `test_forms.py`, `test_job_params.py`,
+  `test_params_app.py` and `test_phase3_e2e.py`. They pass on Python 3.14 with Textual 8.2.8, and on Python 3.13 with
+  the lowest direct versions (Textual 0.80.0, Rich 13.3.3, pydantic 2.12.0). `scripts/check_dist.py` knows the new
+  modules.
+- Docs: the README covers forms, `params=`, `confirm=`, settings, secrets, `capture_loggers` and the limits; the
+  public API and the touched internals have docstrings.
+
+### Changed (behaviour)
+
+Commands with parameters
+- **A command with extra parameters now opens a form instead of running with its defaults.** Each parameter of a
+  supported type (other than the Context) becomes a field, so an existing `add_command` or `@app.command` function
+  with one asks for it. `params=False` restores the old behaviour. A parameter of an unsupported type that has a
+  default is left out of the form and keeps its default.
+- **A parameter of an unsupported type with no default raises `ValueError` at registration**, naming the command
+  and the parameter, where it used to fail when the command ran. So do positional-only parameters with no default.
+- **A required `Literal` or `Enum` field with no default starts on its first option**, so it never shows as unset.
+
+Forms
+- **Widget ids are ASCII.** Characters outside `[A-Za-z0-9_-]` in a parameter name become `_`, and such a name gets
+  an index suffix (`a.b` is `form-field-a_b_0`), so a non-ASCII name no longer crashes the form and two names cannot
+  share an id. Plain names keep `form-field-<name>` and `form-error-<name>`.
+- The settings edit form has one field, named `value`, so its id is `form-field-value` for every setting.
+
+Secrets
+- **Once any secret is registered, every job's output is redacted, not only the jobs that had a secret.** A job's
+  `json`, `table` and `pretty` output becomes plain text, and a renderable shows its type name (`<Panel>`), as
+  Phase 2 did for a job with a secret prompt value. The set counts a non-empty secret setting from startup, a masked
+  form value once submitted, and `add_secret` values, so the styling is lost app-wide while one is set.
+
+### Fixed
+- **X-1:** on Python 3.14 a `functools.partial` command took the partial class's docstring as its description
+  (`inspect.isroutine` is true for partials there). `test_cancellable_and_description_are_stored_on_the_leaf`
+  passes again.
+- **A `params` dataclass whose `__post_init__` raises** no longer takes the app down. `Cannot run <label>: <message>`
+  is logged at ERROR, with secrets masked, and nothing runs.
+- **A `validate=` callable that raises an exception other than `ValueError`** no longer takes the app down. It shows
+  `Invalid value` inline; a secret field always shows `Invalid value`, never the message.
+
+### Known limits
+- **Redaction is best effort.** The redaction set is a snapshot taken when a job starts, and it only grows for the
+  session, so a very short secret (a one-digit PIN) garbles later output. Values are masked in text, JSON and table
+  output, but not when they are split across table cells or lines, in a thread a job starts itself, or in a write to
+  `app.panel`. The last includes a write made from inside a job, so use `ctx.panel` there.
+- An `ArgumentParser` cannot mark a field secret (`params=` has no `Secret` for it), and an empty submit on a secret
+  setting keeps its value, so a secret cannot be cleared through the UI.
+- Ctrl+C does not quit while a form, a confirmation or a prompt is open: the app-level binding does not reach a modal
+  screen. Press Esc first. Ctrl+Q is not bound on Textual 0.80.
+- A pydantic validation error (raised when a setting is assigned) shows as the job's `Error in` line, not inline.
+- Settings edits are jobs: they are refused with `Busy` while another job runs, and `save` runs after every edit
+  rather than once per batch.
+- A `Text` title on `json`, `table`, `csv`, `array` and `pretty` still loses its style (C2-4 is deferred to Phase 4).
+- Verified on Textual 8.2.8 (Python 3.14) and Textual 0.80.0 (Python 3.13). The CI workflow has not run on GitHub yet.
 
 ## [Unreleased] - Phase 2 (job runner and Context)
 

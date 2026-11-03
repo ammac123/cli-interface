@@ -6,7 +6,10 @@ The public API is the names in ``__all__``; import them from this package::
     from cli_interface import App, Context, MenuItem
 
 ``App`` (with ``@app.command``) and ``Context`` are the job API; ``CLIApp``, ``MenuItem``
-and ``run`` are the menu API that ``App`` builds on.
+and ``run`` are the menu API that ``App`` builds on. A command asks for its arguments in a
+form built from its signature; ``Param`` and ``Secret`` (as in
+``Annotated[str, Secret()]``) refine a field, ``confirm=`` asks before it runs, and
+``App.settings`` edits a dataclass or pydantic model from the menu.
 
 ``LogAttachment`` is exported as the return type of ``attach_logging`` only: create
 one through that function. ``PanelInbox``, ``TUILogHandler``, ``Job``, ``MenuState`` and
@@ -20,6 +23,7 @@ from .context import Context
 from .display import DisplayPanel
 from .log_handler import LogAttachment
 from .menu import RESERVED_COMMANDS, MenuItem, find_shortcut_conflicts
+from .params import Param, Secret
 from .warning_types import LoggingAttachWarning, ShortcutConflictWarning
 
 __all__ = [
@@ -30,7 +34,9 @@ __all__ = [
     "LogAttachment",
     "LoggingAttachWarning",
     "MenuItem",
+    "Param",
     "RESERVED_COMMANDS",
+    "Secret",
     "ShortcutConflictWarning",
     "__version__",
     "attach_logging",

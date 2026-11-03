@@ -7,9 +7,8 @@ and captured `print()` output; it writes to the panel with `app.panel.*` or `ctx
 code and threads can be routed into the same panel. A menu or an app can also be run straight from the command
 line with `cli-interface module:attr`.
 
-Status: Phase 2 (the job runner and `Context`) is done; see `CHANGELOG.md`. The version is 0.1.0 and there is no
-tagged release yet. Later phases (typed parameters and settings, subprocess support and a headless mode) are
-planned but not implemented.
+Status: Phase 3 (typed parameters, forms and settings) is done; see `CHANGELOG.md`. The version is 0.1.0 and there is
+no tagged release yet. Later phases (subprocess support and a headless mode) are planned but not implemented.
 
 ## Install
 
@@ -21,9 +20,9 @@ uv sync                       # create .venv with the package and the dev group 
 uv add /path/to/cli_interface # or add it to another project
 ```
 
-The suite is run locally on Python 3.13 with the locked Textual 8.2.8 (Phase 2 was also run on Python 3.11
-with Textual 0.80.0 and Rich 13.3.3, before the floor moved to 3.13). Python 3.14, and Textual 0.80.0 on
-Python 3.13, are in the CI matrix but have not been run yet; see Known limitations.
+The suite is run locally on Python 3.14 with the locked Textual 8.2.8, and on Python 3.13 with the lowest direct
+versions (Textual 0.80.0, Rich 13.3.3, pydantic 2.12.0). Windows and the CI matrix have not been run yet; see
+Known limitations.
 
 ## The public API
 
@@ -36,8 +35,9 @@ from cli_interface import App, CLIApp, Context, MenuItem, run, attach_logging
 | Name | What it is |
 |---|---|
 | `MenuItem` | One node of the menu tree. |
-| `App` | A `CLIApp` whose menu is built from functions registered with `@app.command`: `App(name="cli-interface", *, strict_shortcuts=False, max_lines=5000, quit_grace=2.0)`. See Jobs. |
+| `App` | A `CLIApp` whose menu is built from functions registered with `@app.command`: `App(name="cli-interface", *, strict_shortcuts=False, max_lines=5000, quit_grace=2.0, capture_loggers=(), capture_level=None)`. See Jobs and Parameters, forms and settings. |
 | `Context` | What a job function may ask for: panel, log, progress, cancellation, shared state and thread-safe menu calls. See Jobs. |
+| `Param`, `Secret` | Metadata for a command parameter or a settings field, as `Annotated[str, Param(...)]` or `Annotated[str, Secret()]`. See Parameters, forms and settings. |
 | `CLIApp` | The Textual app that shows a tree: `CLIApp(menu, *, strict_shortcuts=False, max_lines=5000, quit_grace=2.0)`. |
 | `run` | `run(menu, *, strict_shortcuts=False, max_lines=5000) -> int`: build a `CLIApp`, run it, return the exit code. |
 | `attach_logging` | Route a Python logger into the output panel. |
@@ -48,9 +48,10 @@ from cli_interface import App, CLIApp, Context, MenuItem, run, attach_logging
 | `ShortcutConflictWarning`, `LoggingAttachWarning` | The two warning categories (both `UserWarning` subclasses). |
 | `__version__` | The package version, the same as the installed distribution's. |
 
-`PanelInbox`, `TUILogHandler`, `Job`, `JobManager`, `MenuState`, `PromptScreen`, `Dashboard`, `NavBar`, the
-colour theme and the event dictionaries of `cli_interface.events` (schema version 1) are internal. They still
-import from their submodules, but may change without notice. Some `CLIApp` methods (`emit`, `loop`, `call_ui`,
+The package exports these 15 names. `PanelInbox`, `TUILogHandler`, `Job`, `JobManager`, `MenuState`,
+`PromptScreen`, `FormScreen`, `ConfirmScreen`, `ParamSpec`, `FormContext`, `Dashboard`, `NavBar`, the colour theme,
+the event dictionaries of `cli_interface.events` (schema version 1) and the modules `params`, `settings` and
+`settings_menu` are internal. They still import from their submodules, but may change without notice. Some `CLIApp` methods (`emit`, `loop`, `call_ui`,
 `post_ui`, `on_ui_thread`, `panel_for`, `spinner_acquire`, `spinner_release`, `job_changed`, `flush_inbox`,
 `request_exit`) are public only because the job runner calls them: they are not consumer API.
 
@@ -208,6 +209,8 @@ def start_job() -> None:
 - `app.push_log(message, level="INFO")` is safe from any thread and does not block a worker thread. At most
   10,000 records wait for the UI; beyond that the oldest are dropped and a warning line says how many.
   Records pushed before the app starts are shown on start; after it exits they are ignored.
+- To show named loggers from the start, give the app `capture_loggers=["myjob"]`, with `capture_level="INFO"` to
+  set their level while it runs. They are attached when the app mounts and detached when it exits.
 
 ## Prompts and secrets
 
@@ -397,16 +400,18 @@ if __name__ == "__main__":
     app.run()
 ```
 
-- `@app.command(path, *, key="", cancellable=False, description=None)` registers the function and returns it
-  unchanged. `path` is `"Group/Name"`: the last segment is the label and the ones before it are submenus,
+- `@app.command(path, *, key="", cancellable=False, description=None, params=None, confirm=False)` registers the
+  function and returns it unchanged. `params` and `confirm` ask for arguments and a yes/no first (see Parameters,
+  forms and settings). `path` is `"Group/Name"`: the last segment is the label and the ones before it are submenus,
   created as needed (`app.group(path, key=...)` creates one with a shortcut). `ValueError` for an empty
   segment, a path that is taken or one that goes through a command. `app.add_command(path, fn, ...)` is the
   same without the decorator, and it works while the app runs. Shortcut problems are reported like those of
   `CLIApp(menu)` (a `ShortcutConflictWarning`, or `ValueError` under `strict_shortcuts`).
 - `key` is the shortcut. `cancellable=True` lets the first `stop` cancel the job (see below). `description`
   defaults to the first line of the docstring and is not displayed.
-- `App(name="cli-interface", *, strict_shortcuts=False, max_lines=5000, quit_grace=2.0, **textual_kwargs)`.
-  `name` is the root label and the window title. `CLIApp` takes the same `quit_grace`; `run(menu)` does not.
+- `App(name="cli-interface", *, strict_shortcuts=False, max_lines=5000, quit_grace=2.0, capture_loggers=(),
+  capture_level=None, **textual_kwargs)`. `name` is the root label and the window title. `CLIApp` takes the same
+  `quit_grace`; `run(menu)` does not. `capture_loggers` is covered under Logging.
 - Registering commands is not the only way: `CLIApp(MenuItem(...))` actions get the same job treatment, and the
   Context-taking and `async` ones work there too.
 
@@ -546,6 +551,158 @@ async def check_count() -> None:
 asyncio.run(check_count())
 ```
 
+## Parameters, forms and settings
+
+A command can ask for its arguments before it runs. `App` builds a form from the function's signature: each
+parameter of a supported type becomes a field, in signature order, and the values arrive as keyword arguments
+when the form is submitted. The `Context` parameter is never a field. The examples below extend one module.
+
+```python
+import argparse
+import dataclasses
+import enum
+from typing import Annotated, Literal
+
+from cli_interface import App, Context, Param, Secret
+
+app = App("Deploy")
+app.group("Deploy", key="d")
+app.state.regions = ["eu-west-1", "us-east-1"]
+
+
+class Level(enum.Enum):
+    LOW = 1
+    HIGH = 2
+
+
+@app.command("Deploy/Release", key="r", confirm="Release now?")
+def release(
+    ctx: Context,
+    region: Annotated[str, Param(choices=lambda c: c.state.regions, label="Region", help="Where to deploy")],
+    env: Literal["staging", "prod"] = "staging",
+    replicas: int | None = None,
+    dry_run: bool = True,
+    level: Level = Level.LOW,
+    token: Annotated[str, Secret()] = "",
+) -> str:
+    ctx.log(f"releasing {env} to {region}")
+    return f"released to {region}"
+```
+
+The form has a select for `region`, `env` and `level`, a number for `replicas` (clearing it passes `None`), a
+switch for `dry_run` and a masked input for `token`. The `choices` callable receives a `FormContext`, whose
+`state` is `app.state`, and is called each time the form opens.
+
+- Type to field: `str`, `int`, `float` and `Path` are text inputs (`int` and `float` are checked); `bool` is a
+  switch; `Enum` and `Literal` are selects; `list[...]` is comma-separated text, or a multi-select with `choices`;
+  `X | None` clears to `None`. An unannotated parameter takes the type of its default.
+- `Param(label=, help=, choices=, secret=, validate=, min=, max=)` refines a field. `choices` is an iterable of
+  values or `(value, label)` pairs, or a callable as above. `validate` raises `ValueError("message")` to reject a
+  value.
+- Submitting checks every field at once: each error shows under its field, focus moves to the first one, and the
+  form stays open. Esc or Cancel runs nothing.
+- A parameter of an unsupported type is refused at registration if it has no default; with a default it is left
+  out of the form and keeps its default. `params=False` never shows a form.
+
+`confirm=True` asks "Run Release?", and a string is shown as given. The yes/no dialog opens after the form. Cancel,
+Esc and `n` run nothing, and Cancel has the focus, so a stray Enter cancels.
+
+`params=` takes a dataclass class or an `argparse.ArgumentParser` instead of the signature. The function then takes
+one parameter, besides the `Context`, that receives the built object:
+
+```python
+@dataclasses.dataclass
+class Retry:
+    target: str
+    retries: int = 2
+
+
+@app.command("Deploy/Retry", key="t", params=Retry)
+def retry(ctx: Context, job: Retry) -> None:             # one Retry, built from the form
+    ctx.log(f"retrying {job.target} {job.retries} times")
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--name", required=True)
+parser.add_argument("--count", type=int, default=3)
+parser.add_argument("--verbose", action="store_true")
+
+
+def scale(args: argparse.Namespace) -> str:
+    return f"{args.name} x{args.count}"
+
+
+app.add_command("Deploy/Scale", scale, key="s", params=parser)   # the Namespace goes to `args`
+```
+
+A parser's `type=`, `choices`, `nargs` of `+` or `*`, and the store, store_true and store_false actions are
+mapped; any other action raises `ValueError`. An ArgumentParser cannot mark a field secret. A nested dataclass
+field is refused: use `app.settings` for nested models.
+
+### Settings
+
+`app.settings(path, model, *, save=None, secret=(), reset=True, key="")` turns a dataclass or pydantic v2 model
+instance into an editable submenu. Every field is an item that shows its live value, a nested model is a submenu,
+and "Reset to defaults" asks first:
+
+```python
+@dataclasses.dataclass
+class Database:
+    host: str = "localhost"
+    port: int = 5432
+
+
+@dataclasses.dataclass
+class Config:
+    name: str = "app"
+    level: Level = Level.LOW
+    token: str = ""
+    db: Database = dataclasses.field(default_factory=Database)
+
+
+config = Config()
+
+
+def save(ctx: Context) -> None:
+    ctx.log(f"saved {config.name}")         # called after each change; raising undoes that change
+
+
+app.settings("Settings", config, key="s", save=save, secret=["token"])
+
+
+if __name__ == "__main__":
+    app.run()
+```
+
+The menu shows each value in brackets, for example `Level (LOW)`, and the secret as `Token (••••)`. Opening a field
+asks for a new value in a form. `secret=` takes field names, dotted for nested ones (`"db.password"`). Each edit or
+reset runs as a job, changes the object in place and then calls `save(ctx)` (or `save()`). If `save` raises, the
+change is undone and the job ends with `Error in`. `save=None` keeps changes in memory. Edits are refused while
+another job runs.
+
+A pydantic v2 model instance works the same way; pydantic is not a runtime dependency, and the package never
+imports it. A function that returns the model (called with no argument, or with a `FormContext`) is called each
+time the submenu opens, which suits a model loaded from a file. A class, a frozen dataclass or any other object
+raises `TypeError`.
+
+### Secrets
+
+A masked field (`Secret()`, `Param(secret=True)` or a pydantic `SecretStr`) and each `secret=` field of
+`app.settings` add their values to one redaction set for the session. In a job, every value in that set is shown
+as `***`: in `ctx.log`, `ctx.panel`, `print()` and stderr, progress text, return values (JSON and tables too, as
+plain text) and error messages. Log records from loggers attached with `attach_logging` or `capture_loggers` are
+covered too. Masked fields are never prefilled, and an empty submit of a secret setting keeps its value.
+
+Once any secret is registered, every job's output is redacted in that way, not only the jobs that had a secret: `json`,
+`table` and `pretty` output is shown as plain text, and a renderable shows its type name (`<Panel>`). A secret setting
+with a non-empty value counts from startup, so this applies to the whole app while one is set.
+
+For a value you handle yourself, `app.add_secret(value)` adds it, `app.add_secret_source(fn)` registers a function
+that returns the current values, and `app.secret_values()` lists the set. Redaction is best effort: the set is read
+when a job starts and only grows, so a very short secret garbles later output. A secret split across table cells or
+lines, a thread a job starts itself and any `app.panel` write are not redacted (inside a job, use `ctx.panel`). See
+Known limitations.
+
 ## Running a menu from the command line
 
 The `cli-interface` console script runs a menu defined in your own module:
@@ -622,7 +779,7 @@ unpacked sdist). `python examples/main.py` does not work: run it as a module.
 - **CI has not run yet.** `.github/workflows/ci.yml` is configured for Ubuntu, macOS and Windows on Python 3.13
   and 3.14 with the locked versions, plus two Ubuntu legs (3.13 and 3.14) with the lowest direct dependencies
   (Textual 0.80.0, Rich 13.3.3), but the workflow has not run on GitHub yet. Locally the suite was run on
-  macOS only, on Python 3.13; Windows, Python 3.14 and Textual 0.80.0 on Python 3.13 are untested.
+  macOS only: on Python 3.14 with Textual 8.2.8, and on Python 3.13 with Textual 0.80.0. Windows is untested.
 - **Where warnings point.** A `ShortcutConflictWarning` or `LoggingAttachWarning` points at the first caller
   outside the package (your `CLIApp(menu)`, `set_menu`, `run(menu)` or `add_command` call), and for the console
   script at its entry point.
@@ -653,11 +810,23 @@ Jobs:
 - **Secrets.** See Prompts and secrets: JSON and table output is redacted into plain text, a secret split across
   cells or lines is not caught, and threads a secret job starts are not redacted.
 
+Parameters and settings:
+- **Ctrl+C does not quit under a dialog.** While a form, a confirmation or a prompt is open, the app-level binding
+  does not reach it: press Esc first, then Ctrl+C or `q` + Enter. Ctrl+Q is not bound on Textual 0.80.
+- **Redaction is best effort** (see Secrets above): the redaction set is a snapshot taken when a job starts and only
+  grows; `app.panel` writes are not redacted, even from inside a job.
+- **ArgumentParser parameters cannot mark a field secret**, and an empty submit on a secret field keeps its value,
+  so a secret cannot be cleared through the UI.
+- **Pydantic validation errors** from a setting that rejects its value when it is assigned show as the job's
+  `Error in` line, not inline in the form.
+- **Settings edits are jobs.** They are refused with `Busy` while another job runs, and `save` runs after every
+  edit rather than once per batch.
+
 ## Development and tests
 
 ```bash
 uv sync                                        # .venv with the package and the dev group
-uv run pytest -q                               # about 1,740 tests, about 2.5 minutes
+uv run pytest -q                               # about 2,000 tests, about 4 minutes
 uv run ruff check cli_interface examples scripts tests
 uv run mypy cli_interface examples scripts
 uv build --out-dir dist                        # sdist, then a wheel built from it

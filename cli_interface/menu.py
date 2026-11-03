@@ -13,7 +13,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from reprlib import recursive_repr
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from .params import ParamSpec
 
 _log = logging.getLogger(__name__)
 
@@ -209,6 +212,20 @@ class _CommandItem(MenuItem):
 
     cancellable: bool = False
     command_path: tuple[str, ...] = ()
+    params: tuple[ParamSpec, ...] = ()
+    deliver: Literal["kwargs", "dataclass", "namespace"] = "kwargs"
+    confirm: str | None = None
+
+
+@dataclass(repr=False)
+class _SettingsGroup(MenuItem):
+    """A submenu built by ``App.settings``. Always a submenu, even while it has no children."""
+
+    on_enter: Callable[[], bool] | None = None
+
+    @property
+    def is_leaf(self) -> bool:
+        return False
 
 
 def make_command_item(
@@ -218,6 +235,9 @@ def make_command_item(
     key: str = "",
     cancellable: bool = False,
     description: str = "",
+    params: Sequence[ParamSpec] = (),
+    deliver: Literal["kwargs", "dataclass", "namespace"] = "kwargs",
+    confirm: str | None = None,
 ) -> _CommandItem:
     """
     Build the leaf for a command at ``path``: a ``"/"``-separated string or a sequence of
@@ -230,6 +250,7 @@ def make_command_item(
     return _CommandItem(
         segments[-1], shortcut=key, description=description, action=fn,
         cancellable=cancellable, command_path=segments,
+        params=tuple(params), deliver=deliver, confirm=confirm,
     )
 
 
@@ -364,7 +385,7 @@ class MenuState:
     def enter(self) -> bool:
         """Navigate into the selected item. Returns True if navigation happened."""
         item = self.selected_item
-        if item is None or item.is_leaf:
+        if item is None or item.is_leaf or not item.children:
             return False
         self._stack.append((item, 0))
         return True

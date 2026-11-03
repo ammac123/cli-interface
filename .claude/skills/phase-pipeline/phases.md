@@ -159,6 +159,8 @@ None of this is throwaway, because the Phase 2 runner builds on it.
 
 ### Phase 3: parameters and settings (the largest `whiteboard.py` saving, about 350 lines)
 
+**Status: done** (2026-11-03). Branch `phase-3`, from `646c781`; local commit, not pushed. Pipeline record: `.claude/pipeline/phase-3*.md` (ledger `phase-3.md`). 2,007 tests pass on Python 3.14 with Textual 8.2.8, and the lowest-direct run (Python 3.13, Textual 0.80.0) passed too. Lean mode held the cost down. C2-4 (styled `Text` titles on json/table events) was deferred to Phase 4.
+
 | Item | Effort |
 |---|---|
 | Parameter schema from a signature, dataclass or argparse, giving forms with validation, Select, Switch and masked fields | M |
@@ -325,3 +327,28 @@ Sources: `.claude/pipeline/phase-2-review-1.md`, `-review-2.md`, `-review-3-clas
 - F7 (no non-TTY path) and the `run` verb decision are still open (see Phase 1 carry-forward).
 
 **Decisions the planner defaulted, to raise with the user** (plan §6; all provisional and reversible): U1 context-free sync `MenuItem` actions run inline on the UI thread; U2 `App` subclasses `CLIApp` and `__all__` has 13 names; U3 own daemon threads instead of `asyncio.to_thread`; U4 a second run while busy is rejected, `quit_grace` 2.0 s, second `stop` abandons; U5 `stop` is reserved; U6 return-value rendering changes; U7 tracebacks always shown; U8 drop-notice rule; U9 capture routing; U10 spinner per job; U11 `Context` has no `app`, `ask` or `require`; U12 `app.jobs.wait_idle` is the public test hook; U13 `attach_logging` after exit warns and returns an inert handle.
+
+## Carried forward from Phase 3
+
+Sources: `.claude/pipeline/phase-3-review-1.md`, `-review-2-classification.md`, `-test-1.md`, `-docs.md`.
+
+**Decision for the user**
+- The shared secret set is app-wide. Once any secret is registered (a settings secret with a non-empty value, a submitted masked form value, `add_secret`), every later job's json/table/pretty output renders as plain text and a renderable shows as `<Panel>`. Options: keep (documented), render styled output through a redaction-aware path, or scope the set per command.
+- Auto-derived forms on existing commands (`params=False` opts out) and form-then-confirm ordering were planner defaults; both are tested and documented.
+
+**Phase 4**
+- C2-4: `Text` titles on json/table/array/pretty/csv lose their style (events have no `obj` slot).
+- `ctrl+c` does not quit while a form, confirm or prompt is open (`CLIApp` binds it without `priority`; Textual 0.80 has no `ctrl+q`). Use `Esc` first.
+- `app.panel.log()` called from inside a job body is not redacted (use `ctx.panel`); a thread a secret job spawns is not redacted; the redaction set only grows, so a very short secret garbles later output (consider a minimum length).
+- `params=<ArgumentParser>` cannot mark secrets (add a `meta` argument).
+
+**Minor (any later phase)**
+- `reset_defaults` can raise part-way (for example pydantic `validate_assignment`) before it returns `changed`; roll back from a `before` snapshot.
+- Entering a factory-backed settings group replaces `source.obj` while an edit job may still hold the old object.
+- `add_command("Settings/Foo")` can graft a child into a `_SettingsGroup`, and the next rebuild deletes it; refuse it in `_cmd_walk`.
+- A required Literal/Enum choice with no default preselects its first option, so it never shows "Required".
+- `ParamSpec.__repr__` shows a secret's code-supplied default; `convert` returns a mutable `spec.default` by reference.
+- `settings.secret_values` is unused (`settings_menu.secret_strings` re-implements it): remove or reuse.
+- `choices` callables and `initial()` run on the UI thread.
+- A test through the real form path for `_fatal_error` scrubbing; `FormScreen` ids for colliding names are asserted only in `test_forms.py`.
+- Carried from Phase 2 and still open: the self-exit "Stopping X" WARNING; `PanelInbox._deliver` write-error logging; the abandon-policy simplification.

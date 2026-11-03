@@ -36,7 +36,9 @@ PUBLIC_NAMES = {
     "LogAttachment",
     "LoggingAttachWarning",
     "MenuItem",
+    "Param",
     "RESERVED_COMMANDS",
+    "Secret",
     "ShortcutConflictWarning",
     "__version__",
     "attach_logging",
@@ -206,8 +208,8 @@ def test_pyproject_filters_are_by_category_not_by_message():
 
 # --------------------------------------------------------------------------- Phase 2: App and Context join the facade
 
-def test_the_public_api_is_exactly_thirteen_names():
-    assert len(cli_interface.__all__) == 13 == len(PUBLIC_NAMES)
+def test_the_public_api_is_exactly_fifteen_names():
+    assert len(cli_interface.__all__) == 15 == len(PUBLIC_NAMES)
     assert {"App", "Context"} <= set(cli_interface.__all__)
 
 
@@ -225,7 +227,7 @@ def test_the_job_machinery_is_not_exported(name):
 
 
 def test_the_original_eleven_names_all_still_resolve():
-    original = PUBLIC_NAMES - {"App", "Context"}
+    original = PUBLIC_NAMES - {"App", "Context", "Param", "Secret"}
     assert len(original) == 11 and all(hasattr(cli_interface, n) for n in original)
 
 
