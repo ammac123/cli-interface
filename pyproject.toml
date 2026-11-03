@@ -33,7 +33,7 @@ only-include = ["cli_interface", "examples", "README.md", "LICENSE", "CHANGELOG.
 exclude = ["**/__pycache__", "**/*.py[cod]"]
 
 [dependency-groups]
-test = ["pytest>=9.2.0", "pytest-asyncio>=1.4.1"]
+test = ["pytest>=9.2.0", "pytest-asyncio>=1.4.1", "pydantic>=2.12"]
 lint = ["ruff>=0.17", "mypy>=2.4"]
 dev = [{ include-group = "test" }, { include-group = "lint" }]
 

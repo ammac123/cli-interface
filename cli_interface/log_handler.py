@@ -13,7 +13,7 @@ from collections import deque
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from .events import Event, EventSink, is_droppable, make_log, make_log_from_record
+from .events import Event, EventSink, is_droppable, make_log, make_log_from_record, redact_event, redact_text
 
 if TYPE_CHECKING:
     from .app import CLIApp
@@ -321,23 +321,32 @@ class TUILogHandler(logging.Handler):
         """Make the handler inert (later ``emit`` calls are ignored). It does not remove itself from the logger."""
         self._detached = True
 
+    def _secrets(self) -> tuple[str, ...]:
+        provider = getattr(self._app, "secret_values", None)
+        if not callable(provider):
+            return ()
+        try:
+            return tuple(provider())
+        except Exception:
+            return ()
+
     def emit(self, record: logging.LogRecord) -> None:
         """Queue ``record`` for the panel as a ``log`` event. Does nothing once detached."""
         if self._detached:
             return
         try:
+            secrets = self._secrets()
             host_emit = getattr(self._app, "emit", None)
             if not callable(host_emit):
-                self._app.push_log(self.format(record), record.levelname)
+                self._app.push_log(redact_text(self.format(record), secrets), record.levelname)
             elif self.formatter is self._default_formatter:
-                host_emit(make_log_from_record(record))
+                host_emit(redact_event(make_log_from_record(record), secrets))
             else:
-                host_emit(
-                    make_log(
-                        self.format(record), record.levelname,
-                        logger=None, levelno=record.levelno, exc=None, t=record.created,
-                    )
+                event = make_log(
+                    self.format(record), record.levelname,
+                    logger=None, levelno=record.levelno, exc=None, t=record.created,
                 )
+                host_emit(redact_event(event, secrets))
         except Exception:
             self.handleError(record)
 

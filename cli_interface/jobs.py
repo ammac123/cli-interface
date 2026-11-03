@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import types
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ForwardRef, Literal, Protocol, Union, get_args, get_origin
 
@@ -69,6 +69,8 @@ class JobSpec:
     cancellable: bool = False
     kind: Literal["command", "startup", "shutdown"] = "command"
     threaded: bool = False
+    kwargs: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    secrets: tuple[str, ...] = field(default=(), repr=False)
 
 
 def spec_from_item(item: MenuItem, value: str | None, path: tuple[str, ...]) -> JobSpec:
@@ -549,11 +551,24 @@ class JobManager:
         host = self._host
         job = Job(next(self._ids), spec, lane)
         job._hooks = hooks
-        job._secrets = (spec.value,) if spec.secret and spec.value else ()
+        job._secrets = self._collect_secrets(spec)
         job._emitter = JobEmitter(host.emit, job.id, job._secrets, lambda: job.abandoned)
         job._capture = CAPTURE.open_job(job._emitter.emit, job.id)
         job._ctx = Context(job, host, host.panel_for(job._emitter), job._emitter)
         return job
+
+    def _collect_secrets(self, spec: JobSpec) -> tuple[str, ...]:
+        found: list[str] = []
+        if spec.secret and spec.value:
+            found.append(spec.value)
+        found.extend(spec.secrets)
+        provider = getattr(self._host, "secret_values", None)
+        if callable(provider):
+            try:
+                found.extend(provider())
+            except Exception:
+                _log.debug("host secret_values raised", exc_info=True)
+        return tuple(dict.fromkeys(s for s in found if isinstance(s, str) and s))
 
     def _begin(self, job: Job) -> None:
         self._current = job
@@ -593,7 +608,8 @@ class JobManager:
         if ok and job.cancelled.is_set():
             ok, value = False, JobCancelled()
         if ok:
-            args, kwargs = bind_call(spec.fn, job._ctx, spec.value)
+            args, bound = bind_call(spec.fn, job._ctx, spec.value)
+            kwargs = {**bound, **spec.kwargs}
             ok, value = yield _Step("body", lambda: spec.fn(*args, **kwargs), job.lane)
         if ok and inspect.isawaitable(value):
             pending = value

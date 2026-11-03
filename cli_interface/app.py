@@ -5,13 +5,15 @@ All three are re-exported by ``cli_interface``.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import concurrent.futures
 import contextvars
 import logging
 import math
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, TypeVar
 
@@ -28,20 +30,21 @@ from textual.widgets import Input, RichLog, Static
 from ._version import __version__
 from .capture import CAPTURE
 from .display import DisplayPanel, PanelRenderer
-from .events import Event, EventSink, make_action, make_hello, make_log
+from .events import Event, EventSink, make_action, make_hello, make_log, redact_text
 from .jobs import Job, JobManager, SpinnerRefs, spec_from_item
 from .log_handler import LogAttachment, PanelInbox
 from .menu import (
-    MenuItem, MenuState, _NavCell, find_shortcut_conflicts, item_label,
-    make_nav_cell, reserved_action,
+    MenuItem, MenuState, _CommandItem, _NavCell, _SettingsGroup, find_shortcut_conflicts,
+    item_label, make_nav_cell, reserved_action,
 )
+from .params import FormContext, pack, resolve_choices
 from .phrases import get_phrase
 from .theme import (
     _BG, _DIM_FG, _FG, _HINT_TEXT,
     _ORANGE, _PANEL, _SURFACE,
 )
 from .warning_types import LoggingAttachWarning, ShortcutConflictWarning, warn_external
-from .widgets import Dashboard, NavBar, PromptScreen
+from .widgets import ConfirmScreen, Dashboard, FormScreen, NavBar, PromptScreen
 
 _DEFAULT_MAX_LINES = 5000
 _DEFAULT_QUIT_GRACE = 2.0
@@ -83,6 +86,21 @@ def _progress_text(event: Event) -> str:
     else:
         tail = _number_text(current)
     return f"{label} {tail}" if label else tail
+
+
+@dataclass(repr=False)
+class _FormCommand(_CommandItem):
+    """A command whose form values are packed into one object, or whose form is prefilled."""
+
+    pack_target: Any = None
+    pack_param: str = ""
+    initial: Callable[[], Mapping[str, Any]] | None = None
+    job_label: str = ""
+
+
+def _secret_texts(value: Any) -> list[str]:
+    items = value if isinstance(value, list | tuple | set | frozenset) else [value]
+    return [str(i) for i in items if i is not None and not isinstance(i, bool) and str(i)]
 
 
 class _AppSink:
@@ -138,8 +156,9 @@ class CLIApp(App):
     ``set_menu`` / ``refresh_menu`` / ``go_home``, ``state`` (a ``SimpleNamespace`` shared
     by all jobs and hooks, also ``Context.state``), ``jobs`` (the ``JobManager``; its
     ``mark`` / ``wait_idle`` / ``wait_until`` are the test hooks), the hook decorators
-    ``on_startup`` / ``on_shutdown`` / ``before_command`` / ``after_command``, ``exit``,
-    and the module-level ``attach_logging`` and ``run``. Names starting with an
+    ``on_startup`` / ``on_shutdown`` / ``before_command`` / ``after_command``, the redaction
+    set (``add_secret``, ``add_secret_source``, ``secret_values``), ``exit``, and the
+    module-level ``attach_logging`` and ``run``. Names starting with an
     underscore are internal.
 
     Protocol surface, not consumer API: ``emit``, ``loop``, ``call_ui``, ``post_ui``,
@@ -290,6 +309,9 @@ class CLIApp(App):
         self._inbox             = PanelInbox(self._sink)
         self._attach_lock       = threading.Lock()
         self._attachments:      list[LogAttachment] = []
+        self._secret_lock       = threading.Lock()
+        self._secrets:          dict[str, None] = {}
+        self._secret_sources:   list[Callable[[], Iterable[str]]] = []
         self._state             = MenuState(menu)
         self._display_items:    list[MenuItem] = []
         self._display_selected: int  = 0
@@ -330,6 +352,40 @@ class CLIApp(App):
         then is held and shown on start.
         """
         return self._panel
+
+    def add_secret(self, value: str) -> None:
+        """
+        Add ``value`` to the redaction set for the rest of the session: it is masked in job
+        output, return values, error text and log records. Empty strings are ignored. Any
+        thread. Values typed into a masked form field are added automatically.
+        """
+        if not isinstance(value, str):
+            raise TypeError(f"value must be a str, not {type(value).__name__}")
+        if value:
+            with self._secret_lock:
+                self._secrets[value] = None
+
+    def add_secret_source(self, fn: Callable[[], Iterable[str]]) -> None:
+        """
+        Register ``fn()`` returning the current secret strings, read each time a job starts and a
+        log record is formatted (any thread). A source that raises is skipped.
+        """
+        if not callable(fn):
+            raise TypeError(f"fn must be callable, not {type(fn).__name__}")
+        with self._secret_lock:
+            self._secret_sources.append(fn)
+
+    def secret_values(self) -> tuple[str, ...]:
+        """The union of ``add_secret`` values and the sources, without empties or duplicates."""
+        with self._secret_lock:
+            found = list(self._secrets)
+            sources = list(self._secret_sources)
+        for source in sources:
+            try:
+                found.extend(source())
+            except Exception:
+                _log.debug("secret source raised", exc_info=True)
+        return tuple(dict.fromkeys(s for s in found if isinstance(s, str) and s))
 
     def emit(self, event: Event) -> None:
         """
@@ -625,6 +681,10 @@ class CLIApp(App):
         while self._menu_warnings:  # pop each once, so a second on_mount does not repeat them
             self.push_log(self._menu_warnings.pop(0), "WARNING")
         self.jobs.start()
+        self._after_mount()
+
+    def _after_mount(self) -> None:
+        """Hook run at the end of ``on_mount``; ``App`` attaches its captured loggers here."""
 
     def on_unmount(self) -> None:
         # Stop the jobs first and let go of the output capture (before Textual leaves its own
@@ -929,15 +989,66 @@ class CLIApp(App):
         if not item.action:
             self.panel.log(f"{item_label(item)}: no action bound", "WARNING")
             return
-        if not self.jobs.ensure_idle():  # before a prompt opens, not after it is answered
+        if not self.jobs.ensure_idle():  # before a prompt or form opens, not after it is answered
             return
         if item.prompt:
             def _on_value(value: str | None) -> None:
                 if value is not None:
                     self._run_action(item, value)
             self.push_screen(PromptScreen(item_label(item), item.prompt, secret=item.secret), _on_value)
+        elif isinstance(item, _CommandItem) and (item.params or item.confirm):
+            self._open_command(item)
         else:
             self._run_action(item)
+
+    def _open_command(self, item: _CommandItem) -> None:
+        # Form first (if any), then the confirmation (if any), then the job.
+        label = item_label(item)
+        if not item.params:
+            self._confirm_command(item, {})
+            return
+        fctx = FormContext(state=self.state)
+        try:
+            choices = {s.name: resolve_choices(s, fctx) for s in item.params if s.choices is not None}
+            initial = item.initial() if isinstance(item, _FormCommand) and item.initial else None
+        except Exception as exc:
+            self.panel.log(f"Cannot open form: {exc}", "ERROR")
+            return
+
+        def _on_form(values: dict[str, Any] | None) -> None:
+            if values is not None:
+                self._confirm_command(item, values)
+        self.push_screen(FormScreen(label, item.params, choices=choices, initial=initial), _on_form)
+
+    def _confirm_command(self, item: _CommandItem, values: dict[str, Any]) -> None:
+        if not item.confirm:
+            self._submit_command(item, values)
+            return
+
+        def _on_answer(yes: bool | None) -> None:
+            if yes:
+                self._submit_command(item, values)
+        self.push_screen(ConfirmScreen("Confirm", item.confirm, yes="Yes", no="Cancel"), _on_answer)
+
+    def _submit_command(self, item: _CommandItem, values: dict[str, Any]) -> None:
+        # The values are never echoed. Those of masked fields join the redaction set first.
+        secrets = [t for spec in item.params if spec.secret for t in _secret_texts(values.get(spec.name))]
+        for text in secrets:
+            self.add_secret(text)
+        kwargs: dict[str, Any] = values
+        if item.deliver != "kwargs" and isinstance(item, _FormCommand) and item.pack_param:
+            target = argparse.Namespace if item.deliver == "namespace" else item.pack_target
+            try:
+                kwargs = {item.pack_param: pack(item.params, values, target)}
+            except Exception as exc:
+                self.panel.log(f"Cannot run {item_label(item)}: {redact_text(str(exc), self.secret_values())}", "ERROR")
+                return
+        if item.action is None:
+            return
+        spec = replace(spec_from_item(item, None, ()), kwargs=kwargs, secrets=tuple(secrets))
+        if isinstance(item, _FormCommand) and item.job_label:
+            spec = replace(spec, label=item.job_label)
+        self.jobs.submit(spec)
 
     def _run_action(self, item: MenuItem, value: str | None = None) -> None:
         if item.action is None:
@@ -958,12 +1069,21 @@ class CLIApp(App):
         if item.is_leaf:
             self._execute_item(item)
         else:
+            if isinstance(item, _SettingsGroup) and item.on_enter is not None:
+                try:
+                    ready = item.on_enter()
+                except Exception as exc:
+                    self.panel.log(f"Settings unavailable: {exc}", "WARNING")
+                    return
+                if not ready:  # the callback has said why
+                    return
             index = next((i for i, c in enumerate(self._state.current_menu.children) if c is item), None)
             if index is None:  # the menu changed since the view was drawn
                 self._refresh_view(None)
                 return
             self._state.selected_index = index
-            self._state.enter()
+            if not self._state.enter():  # a submenu without children: nothing to open
+                return
             self._display_selected = 0
             self._refresh_view("navigating")
 
